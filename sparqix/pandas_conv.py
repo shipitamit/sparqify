@@ -449,7 +449,7 @@ class Translator:
             if name == "round" and a:
                 v = self.visit(a[0])
                 d = ast.unparse(a[1]) if len(a) > 1 else "0"
-                return V("col", f"F.round({self.col(v)}, {d})", df=v.df)
+                return V("col", f"F.bround({self.col(v)}, {d})", df=v.df)      # pandas/Python round ties to even; F.round rounds them up
             if name in ("isnan", "isnull") and a:
                 v = self.visit(a[0])
                 return V("col", f"{self.col(v)}.isNull()", df=v.df, boolean=True)
@@ -867,7 +867,7 @@ class Translator:
         if name == "fillna":
             return colv(f"F.coalesce({c}, {self.col(self.visit(a[0]))})")
         if name == "round":
-            return colv(f"F.round({c}, {ast.unparse(a[0]) if a else 0})")
+            return colv(f"F.bround({c}, {ast.unparse(a[0]) if a else 0})")      # ties to even, like pandas
         if name == "abs":
             return colv(f"F.abs({c})")
         if name == "clip":

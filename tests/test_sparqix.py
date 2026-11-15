@@ -3137,3 +3137,8 @@ def test_web_origin_must_match_host_and_port():
         assert _web_req(port, "POST", "/api/convert", {**ok, "Origin": "https://evil.example.com"}, body)[0] == 403
     finally:
         srv.shutdown()
+
+
+def test_pandas_round_uses_half_even_like_pandas():
+    code, _ = convert("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf['x'] = df['x'].round(1)\ny = round(2.5)\n", "pandas")
+    assert "F.bround(" in code and "F.round(" not in code
