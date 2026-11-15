@@ -17,6 +17,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      actions: read               # upload-sarif reads the workflow run
       security-events: write      # upload the scan to code scanning
     steps:
       # Run scripts/pin_actions.sh once to replace these version tags with full commit SHAs.
@@ -35,7 +36,7 @@ jobs:
           output: trivy.sarif
       - name: Upload scan results
         if: always()
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         with: {sarif_file: trivy.sarif}
       - name: Image runs as non-root and serves probes
         run: |
