@@ -1,6 +1,6 @@
 [project]
 name = "sparqix"
-version = "0.1.0"
+version = "0.1.0.dev1"
 description = "Convert pandas, SQL dialects, SAS, R, ETL tools (Informatica, Talend, Teradata...) and more into Apache Spark (PySpark / Spark SQL)"
 readme = "README.md"
 license = "MIT"

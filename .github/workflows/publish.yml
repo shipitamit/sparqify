@@ -40,7 +40,9 @@ jobs:
       - uses: actions/download-artifact@v7
         with: {name: dist, path: dist/}
       - uses: pypa/gh-action-pypi-publish@release/v1
-        with: {repository-url: "https://test.pypi.org/legacy/"}
+        with:
+          repository-url: "https://test.pypi.org/legacy/"
+          skip-existing: true        # a re-run of the same version is not an error
 
   pypi:
     if: github.event_name == 'release'

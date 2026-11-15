@@ -2911,3 +2911,13 @@ def test_converted_run_makes_relative_spark_paths_absolute(tmp_path, monkeypatch
     ns = _converted_ns("pandas", "from pyspark.sql.readwriter import DataFrameReader as R\nx = R().csv('a.csv')\ny = R().csv('/abs/b.csv')\nz = R().csv('s3://b/c.csv')\n", str(tmp_path))
     assert seen == [str(tmp_path / "a.csv"), "/abs/b.csv", "s3://b/c.csv"]
     assert Reader().csv("a.csv") == "a.csv"          # restored afterwards
+
+
+def test_no_old_product_name_anywhere():
+    """The project was once called 'sparkify'; the web page header split it across tags (<b>Spark</b>ify), which a plain text search misses."""
+    import re
+    from sparqix import web
+    text = re.sub(r"<[^>]+>", "", web.PAGE).lower()
+    assert "sparkify" not in text and "sparqix" in text
+    for path in glob.glob(os.path.join(HERE, "..", "sparqix", "*.py")) + [os.path.join(HERE, "..", "README.md")]:
+        assert "sparkify" not in re.sub(r"<[^>]+>", "", open(path, encoding="utf-8").read()).lower(), path

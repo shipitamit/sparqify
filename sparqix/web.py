@@ -628,7 +628,7 @@ table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{text-align:left
 .stats{display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px}.tblwrap{overflow:auto;max-height:420px}
 footer{max-width:1320px;margin:8px auto 30px;padding:0 18px;color:var(--mut);font-size:12.5px}
 </style></head><body>
-<header><h1><b>Spark</b>ify</h1><span class="sub">convert pandas, SQL, SAS, R, Informatica, procedures, streaming… to Apache Spark</span>
+<header><h1><b>Sparq</b>ix</h1><span class="sub">convert pandas, SQL, SAS, R, Informatica, procedures, streaming… to Apache Spark</span>
 <div class="tabs"><button id="tabC" class="on">Convert</button><button id="tabP">Project</button><button id="tabO">Orchestrate</button><button id="theme" title="Toggle light / dark">◐</button></div></header>
 <main>
 <div class="opts" id="optbar">
