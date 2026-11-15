@@ -16,6 +16,11 @@ spec:
     spec:
       serviceAccountName: sparqix
       automountServiceAccountToken: false
+      # Stop sequence: preStop sleep (lets the ingress drop this pod), then SIGTERM (the app stops accepting and finishes running conversions for
+      # SPARQIX_DRAIN_SECONDS), then SIGKILL after this many seconds. Keep it above 5 + SPARQIX_DRAIN_SECONDS.
+      terminationGracePeriodSeconds: 170
+      # A private ghcr.io package needs a pull secret (see deploy/README.md), then uncomment:
+      # imagePullSecrets: [{name: ghcr-pull}]
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -24,7 +29,7 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: sparqix
-          image: ghcr.io/YOUR-ORG/sparqix:0.1.0     # build and push it first (see deploy/README.md); pin a digest in production
+          image: ghcr.io/shipitamit/sparqix:0.1.0     # build and push it first (see deploy/README.md); pin a digest in production
           imagePullPolicy: IfNotPresent
           args: ["serve", "--host", "0.0.0.0", "--port", "8765"]
           ports:
@@ -37,8 +42,16 @@ spec:
               value: "sparqix,sparqix.sparqix,sparqix.sparqix.svc,sparqix.sparqix.svc.cluster.local,sparqix.example.com"
             # Optional AI features, any provider: SPARQIX_AI_PROVIDER (anthropic, openai, gemini, mistral, groq, together, openrouter, ollama, custom),
             # SPARQIX_AI_MODEL, and for a self-hosted or gateway endpoint SPARQIX_AI_BASE_URL. The key lives in the Secret, never in the manifest.
+            # Worst-case memory = SPARQIX_MAX_CONCURRENT x SPARQIX_WORKER_MEMORY_MB + ~300 MB for the server; the container memory limit below
+            # must stay above that, or a burst of heavy requests gets the whole pod OOM-killed (3 x 768 + 300 = about 2.6 GiB).
+            - {name: SPARQIX_MAX_CONCURRENT, value: "3"}
+            - {name: SPARQIX_WORKER_MEMORY_MB, value: "768"}
+            - {name: SPARQIX_DRAIN_SECONDS, value: "150"}
             - name: SPARQIX_AI_API_KEY
               valueFrom: {secretKeyRef: {name: sparqix, key: ai-api-key, optional: true}}
+          lifecycle:
+            preStop:
+              exec: {command: ["python", "-c", "import time; time.sleep(5)"]}
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             periodSeconds: 5
@@ -47,8 +60,8 @@ spec:
             initialDelaySeconds: 5
             periodSeconds: 20
           resources:
-            requests: {cpu: 100m, memory: 256Mi}
-            limits: {cpu: "1", memory: 1Gi}
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "2", memory: 3Gi}
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true

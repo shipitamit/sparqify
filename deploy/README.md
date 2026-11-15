@@ -5,10 +5,16 @@ and listens on 8765. The web UI refuses a non-loopback address without a token, 
 
 ## 1. Build and push
 
-    docker build -t ghcr.io/YOUR-ORG/sparqix:0.1.0 .
-    docker push ghcr.io/YOUR-ORG/sparqix:0.1.0
+    docker build -t ghcr.io/shipitamit/sparqix:0.1.0 .
+    docker push ghcr.io/shipitamit/sparqix:0.1.0
 
-Replace `ghcr.io/YOUR-ORG/sparqix` in `deploy/k8s/deployment.yaml` (and `kustomization.yaml`); pin a digest for production.
+Replace `ghcr.io/shipitamit/sparqix` in `deploy/k8s/deployment.yaml` (and `kustomization.yaml`); pin a digest for production.
+
+Pushing a `v*` tag publishes both `ghcr.io/shipitamit/sparqix:v0.1.0` and `:0.1.0` (the manifests use the tag without the `v`), signed by digest.
+Change `shipitamit` if you fork the repository. A package on ghcr.io is **private by default**: either make it public (package settings), or create a pull secret and
+uncomment `imagePullSecrets` in `deployment.yaml`:
+
+    kubectl -n sparqix create secret docker-registry ghcr-pull --docker-server=ghcr.io --docker-username=<github-user> --docker-password=<token with read:packages>
 
 ## 2. Deploy
 
@@ -26,7 +32,13 @@ Quick local check without ingress: `kubectl -n sparqix port-forward svc/sparqix 
 ## What the manifests set up
 - Deployment (2 replicas, rolling update, spread across nodes), Service (ClusterIP), PodDisruptionBudget, HPA (CPU 70%, 2-6 pods).
 - Pod Security `restricted`, non-root, read-only root filesystem (a small `emptyDir` at `/tmp` for the per-request worker processes), no service-account token.
-- NetworkPolicy: ingress only from the `ingress-nginx` namespace (change the label for your controller); egress only DNS and public HTTPS (needed only for `--ai`; remove that rule to cut all outbound traffic).
+- NetworkPolicy: ingress only from the `ingress-nginx` namespace (change the label for your controller); egress only DNS. Outbound HTTPS is **off** by default: apply
+  `networkpolicy-ai-egress.example.yaml` as well if you use the AI features.
+- Limits: `SPARQIX_MAX_CONCURRENT` (3), `SPARQIX_WORKER_MEMORY_MB` (768) and `SPARQIX_CONVERT_TIMEOUT` (60 s) bound each pod. Keep the container memory limit above
+  `MAX_CONCURRENT x WORKER_MEMORY_MB + 300 MB`, otherwise a burst of heavy requests can get the pod OOM-killed.
+- Shutdown: on SIGTERM the app stops accepting connections and lets running conversions finish for up to `SPARQIX_DRAIN_SECONDS` (150); a 5 s `preStop` sleep gives the
+  ingress time to drop the pod, and `terminationGracePeriodSeconds` (170) stays above both.
+- The ingress example sets a 180 s read timeout (the AI assistant can take 150 s) and per-client rate limits.
 - Probes use `/healthz` and `/readyz`, which return `ok` without touching any data or requiring the token.
 - `SPARQIX_ALLOWED_HOSTS` is the DNS-rebinding guard: a request whose Host header is not listed gets 403.
 

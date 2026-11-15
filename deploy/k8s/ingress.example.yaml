@@ -7,6 +7,12 @@ metadata:
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/proxy-body-size: "30m"
+    # nginx stops waiting after 60 s by default; the AI assistant endpoint may take up to 150 s
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "180"
+    # Per-client rate limits (the app's own failed-token throttle cannot tell clients apart behind a proxy)
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+    nginx.ingress.kubernetes.io/limit-connections: "10"
 spec:
   ingressClassName: nginx
   tls:

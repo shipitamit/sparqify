@@ -58,7 +58,7 @@ jobs:
       - name: Validate Kubernetes manifests
         run: |
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
-          ./kubeconform -strict -summary deploy/k8s/deployment.yaml deploy/k8s/service.yaml deploy/k8s/networkpolicy.yaml deploy/k8s/pdb.yaml deploy/k8s/hpa.yaml deploy/k8s/namespace.yaml deploy/k8s/serviceaccount.yaml
+          ./kubeconform -strict -summary deploy/k8s/deployment.yaml deploy/k8s/service.yaml deploy/k8s/networkpolicy.yaml deploy/k8s/pdb.yaml deploy/k8s/hpa.yaml deploy/k8s/namespace.yaml deploy/k8s/serviceaccount.yaml deploy/k8s/networkpolicy-ai-egress.example.yaml
 
   publish:
     if: github.ref_type == 'tag'
@@ -73,14 +73,27 @@ jobs:
         with: {persist-credentials: false}
       - uses: docker/login-action@v3
         with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - name: Image name and tags (both v0.1.0 and 0.1.0, because the Kubernetes manifests use the tag without the v)
+        id: meta
+        env:
+          REF: ${{ github.ref_name }}
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          {
+            echo "image=$repo"
+            echo "tags<<EOT"
+            echo "$repo:$REF"
+            echo "$repo:${REF#v}"
+            echo "EOT"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         id: push
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          tags: ${{ steps.meta.outputs.tags }}
           provenance: true
           sbom: true
       - uses: sigstore/cosign-installer@v3
       - name: Sign the image by digest
-        run: cosign sign --yes ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"

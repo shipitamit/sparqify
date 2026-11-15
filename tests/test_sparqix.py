@@ -2921,3 +2921,84 @@ def test_no_old_product_name_anywhere():
     assert "sparkify" not in text and "sparqix" in text
     for path in glob.glob(os.path.join(HERE, "..", "sparqix", "*.py")) + [os.path.join(HERE, "..", "README.md")]:
         assert "sparkify" not in re.sub(r"<[^>]+>", "", open(path, encoding="utf-8").read()).lower(), path
+
+
+# ---------------------------------------------------------------- web: graceful shutdown and configurable limits
+def test_web_env_limits_are_validated(monkeypatch):
+    from sparqix import web
+    monkeypatch.setenv("SPARQIX_MAX_CONCURRENT", "3")
+    assert web._env_int("SPARQIX_MAX_CONCURRENT", 6, 1, 64) == 3
+    for bad in ("0", "999", "abc", "-1", ""):
+        monkeypatch.setenv("SPARQIX_MAX_CONCURRENT", bad)
+        assert web._env_int("SPARQIX_MAX_CONCURRENT", 6, 1, 64) == 6          # out of range / not a number: the default
+
+
+def test_web_drain_waits_for_running_conversions():
+    import threading
+    import time
+    from sparqix import web
+    assert web._drain(0.2) is True                                  # nothing running
+    assert web._busy.acquire(blocking=False)                        # one conversion "running"
+    try:
+        t = time.time()
+        assert web._drain(0.3) is False and time.time() - t >= 0.25
+        threading.Timer(0.2, web._busy.release).start()
+        assert web._drain(3) is True                                # it finishes while we wait
+    finally:
+        pass
+    assert web._drain(0.2) is True                                  # every slot is free again after a drain
+
+
+def test_web_server_exits_cleanly_on_sigterm():
+    """As a container's main process Python ignores an unhandled SIGTERM; the server must stop by itself (exit code 0, not -15)."""
+    import signal
+    import socket
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+    if not hasattr(signal, "SIGTERM") or sys.platform == "win32":
+        pytest.skip("POSIX only")
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    p = subprocess.Popen([sys.executable, "-m", "sparqix", "serve", "--port", str(port)], cwd=os.path.join(HERE, ".."),
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=dict(os.environ, SPARQIX_DRAIN_SECONDS="2"))
+    try:
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/healthz", timeout=1)
+                break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            pytest.fail("server did not start")
+        p.send_signal(signal.SIGTERM)
+        assert p.wait(timeout=10) == 0
+    finally:
+        if p.poll() is None:
+            p.kill()
+
+
+def test_k8s_manifests_match_the_published_image_and_memory_budget():
+    """The image is published as ghcr.io/<owner>/sparqix:<version> (see image.yml); the Deployment must point at it, and the pod's memory limit
+    must cover the worst case of its worker processes (otherwise a burst of requests gets the pod OOM-killed)."""
+    import re
+    k8s = os.path.join(HERE, "..", "deploy", "k8s")
+    dep = open(os.path.join(k8s, "deployment.yaml")).read()
+    ver = re.search(r'^version = "([^"]+)"', open(os.path.join(HERE, "..", "pyproject.toml")).read(), re.M).group(1)
+    assert "YOUR-ORG" not in dep and re.search(r"image: ghcr\.io/shipitamit/sparqix:[0-9][^\s#]*", dep)
+    assert re.search(r"name: SPARQIX_MAX_CONCURRENT, value: \"(\d+)\"", dep) and re.search(r"name: SPARQIX_WORKER_MEMORY_MB, value: \"(\d+)\"", dep)
+    conc = int(re.search(r"name: SPARQIX_MAX_CONCURRENT, value: \"(\d+)\"", dep).group(1))
+    mem = int(re.search(r"name: SPARQIX_WORKER_MEMORY_MB, value: \"(\d+)\"", dep).group(1))
+    limit = re.search(r"limits: \{cpu: \"?\d+\"?, memory: (\d+)(Gi|Mi)\}", dep)
+    limit_mb = int(limit.group(1)) * (1024 if limit.group(2) == "Gi" else 1)
+    assert conc * mem + 300 <= limit_mb, (conc, mem, limit_mb)
+    grace = int(re.search(r"terminationGracePeriodSeconds: (\d+)", dep).group(1))
+    drain = int(re.search(r"name: SPARQIX_DRAIN_SECONDS, value: \"(\d+)\"", dep).group(1))
+    assert grace >= 5 + drain + 10
+    np = open(os.path.join(k8s, "networkpolicy.yaml")).read()
+    assert "port: 443" not in np and os.path.exists(os.path.join(k8s, "networkpolicy-ai-egress.example.yaml"))   # outbound HTTPS is opt-in
+    ing = open(os.path.join(k8s, "ingress.example.yaml")).read()
+    assert "proxy-read-timeout" in ing and "limit-rps" in ing
+    assert ver.split(".dev")[0] in open(os.path.join(HERE, "..", "deploy", "k8s", "kustomization.yaml")).read()

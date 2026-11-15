@@ -233,9 +233,20 @@ def list_examples(kind="convert"):
 
 
 # ----------------------------------------------------------------------------- security layer
-CONVERT_TIMEOUT = 60            # seconds per request, enforced by killing the worker process
-MEMORY_LIMIT = 2 * 1024 ** 3    # address-space limit of the worker process (where the OS supports it)
-MAX_CONCURRENT = 6              # simultaneous conversions; more get HTTP 503
+def _env_int(name: str, default: int, lo: int, hi: int) -> int:
+    try:
+        v = int(os.environ.get(name, ""))
+    except ValueError:
+        return default
+    return v if lo <= v <= hi else default
+
+
+# Worst-case memory is MAX_CONCURRENT x WORKER_MEMORY_MB (+ ~300 MB for the server): keep a container's memory limit above that,
+# or a burst of heavy requests gets the whole pod OOM-killed. The Kubernetes manifests set these three through the environment.
+CONVERT_TIMEOUT = _env_int("SPARQIX_CONVERT_TIMEOUT", 60, 5, 600)                  # seconds per request, enforced by killing the worker process
+MEMORY_LIMIT = _env_int("SPARQIX_WORKER_MEMORY_MB", 2048, 256, 65536) * 1024 ** 2    # address-space limit of the worker process (where the OS supports it)
+MAX_CONCURRENT = _env_int("SPARQIX_MAX_CONCURRENT", 6, 1, 64)                         # simultaneous conversions; more get HTTP 503
+DRAIN_SECONDS = _env_int("SPARQIX_DRAIN_SECONDS", 25, 0, 600)                         # on SIGTERM: wait this long for running conversions
 LOOPBACK = ("127.0.0.1", "localhost", "::1", "[::1]")
 _USER_ERRORS = ("ValueError", "InputRejected", "ConvertError", "UnsafeOutput", "SyntaxError", "ParseError", "Unsupported", "UnicodeError")
 _busy = threading.BoundedSemaphore(MAX_CONCURRENT)
@@ -437,21 +448,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(400, f"invalid JSON: {_clip(e, 120)}")
         if not _busy.acquire(blocking=False):
             return self._err(503, "server busy: try again in a moment")
-        try:
+        try:                                       # the slot is held until the response is written, so a SIGTERM drain waits for it
             res = _run_isolated(handlers[path], d, timeout=150 if path == "/api/agent" else None)
+            if res[0] == "ok":
+                return self._send(200, json.dumps(res[1]))
+            _, name, msg = res
+            if name == "Timeout":
+                return self._err(408, msg)
+            if name == "AIError":
+                return self._err(502, "AI request failed: " + _clip(msg, 200))
+            if name in _USER_ERRORS or name == "RecursionError":
+                return self._err(400 if name != "RecursionError" else 422, _clip("input rejected: input is too deeply nested" if name == "RecursionError" else msg))
+            sys.stderr.write(f"sparqix: internal error {name}\n")          # type only: no input, no traceback, nothing sensitive
+            return self._err(500, f"internal error ({name}); the input could not be converted")
         finally:
             _busy.release()
-        if res[0] == "ok":
-            return self._send(200, json.dumps(res[1]))
-        _, name, msg = res
-        if name == "Timeout":
-            return self._err(408, msg)
-        if name == "AIError":
-            return self._err(502, "AI request failed: " + _clip(msg, 200))
-        if name in _USER_ERRORS or name == "RecursionError":
-            return self._err(400 if name != "RecursionError" else 422, _clip("input rejected: input is too deeply nested" if name == "RecursionError" else msg))
-        sys.stderr.write(f"sparqix: internal error {name}\n")          # type only: no input, no traceback, nothing sensitive
-        return self._err(500, f"internal error ({name}); the input could not be converted")
 
 
 class _Server(ThreadingHTTPServer):
@@ -497,11 +508,45 @@ def main(argv) -> int:
         print("WARNING: listening on a non-local address over plain HTTP: put a TLS reverse proxy in front and keep the token secret", file=sys.stderr)
     if a.open:
         webbrowser.open(url)
+    _install_sigterm(srv)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
+        _drain(DRAIN_SECONDS)
     return 0
+
+
+def _drain(seconds: float) -> bool:
+    """wait until no conversion is running (all slots free), at most `seconds`; True when drained"""
+    import time
+    deadline = time.monotonic() + seconds
+    got = 0
+    try:
+        while got < MAX_CONCURRENT:
+            left = deadline - time.monotonic()
+            if left <= 0 or not _busy.acquire(timeout=left):
+                return False
+            got += 1
+        return True
+    finally:
+        for _ in range(got):
+            _busy.release()
+
+
+def _install_sigterm(srv) -> None:
+    """Kubernetes stops a pod with SIGTERM. As a container's main process Python ignores it unless a handler is installed, so the
+    pod would wait out the whole grace period and then be killed mid-request. Stop accepting new connections and let running ones finish."""
+    import signal
+
+    def handler(signum, frame):                                    # noqa: ARG001
+        threading.Thread(target=srv.shutdown, daemon=True).start()   # serve_forever() returns; main() then drains
+    try:
+        signal.signal(signal.SIGTERM, handler)
+    except (ValueError, OSError, AttributeError):                  # not the main thread / unsupported platform
+        pass
 
 
 UI_JS = r"""

@@ -1,0 +1,17 @@
+# Optional: lets the pods call an AI provider over HTTPS (only needed if you turn on AI suggestions / the assistant).
+# NetworkPolicies add up, so this only widens the default policy (networkpolicy.yaml). Private ranges and the cloud metadata address stay blocked.
+# For a self-hosted model inside the cluster, allow that service instead of 0.0.0.0/0.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sparqix-ai-egress
+  namespace: sparqix
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: sparqix}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}
+      ports:
+        - {protocol: TCP, port: 443}

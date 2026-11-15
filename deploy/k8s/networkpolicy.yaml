@@ -1,5 +1,6 @@
-# Default-deny, then allow only: ingress to port 8765 from the ingress controller namespace, and (optional) egress to DNS + HTTPS
-# for the AI suggestions feature. Delete the HTTPS egress rule if you never use --ai: the app then needs no outbound access at all.
+# Default-deny, then allow only: ingress to port 8765 from the ingress controller namespace, and egress to DNS. Nothing else leaves the pod.
+# The AI suggestions feature needs outbound HTTPS: apply networkpolicy-ai-egress.example.yaml in addition (policies add up).
+# The ingress rule assumes ingress-nginx: change the namespace label below for another controller (Traefik, HAProxy, a cloud load balancer, ...).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -23,7 +24,3 @@ spec:
       ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-    - to:
-        - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}
-      ports:
-        - {protocol: TCP, port: 443}
