@@ -52,7 +52,7 @@ jobs:
       - name: Image runs as non-root and serves probes
         run: |
           test "$(docker run --rm --entrypoint id sparqix:ci -u)" = "10001"
-          docker run -d --name s -e SPARQIX_TOKEN=ci --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -p 8765:8765 sparqix:ci
+          docker run -d --name sparqix-ci -e SPARQIX_TOKEN=ci --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -p 8765:8765 sparqix:ci
           for i in $(seq 20); do curl -fs localhost:8765/healthz && break; sleep 1; done
           code=$(curl -s -o /dev/null -w '%{http_code}' localhost:8765/api/examples); test "$code" = 401
       - name: Validate Kubernetes manifests
