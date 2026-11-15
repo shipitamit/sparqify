@@ -1,0 +1,14 @@
+data work.big;
+  set sales.orders;
+  where amount > 100;
+  length tier $5;
+  if amount > 1000 then tier = 'GOLD';
+  else if amount > 500 then tier = 'SILVER';
+  else tier = 'STD';
+  net = amount * (1 - discount);
+  keep id region amount net tier;
+run;
+proc sort data=work.big; by region descending net; run;
+proc means data=work.big noprint; class region; var net; output out=work.sum mean=avg_net sum=tot_net; run;
+proc sql; create table work.top as select region, count(*) as n from work.big group by region having count(*) > 2; quit;
+data work.lagged; set work.big; by region; retain run_total 0; run_total + net; if first.region then run_total = net; run;

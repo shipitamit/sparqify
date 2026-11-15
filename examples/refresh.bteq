@@ -1,0 +1,16 @@
+.LOGON tdprod/etl_user,secret;
+.SET WIDTH 200;
+DATABASE sales_db;
+BT;
+DEL FROM stg_orders ALL;
+INS INTO stg_orders SEL order_id, ZEROIFNULL(amount), customer_id FROM src_orders WHERE order_dt >= DATE '2024-01-01';
+ET;
+.IF ERRORCODE <> 0 THEN .QUIT 8;
+COLLECT STATISTICS ON stg_orders COLUMN (order_id);
+.EXPORT REPORT FILE = /out/big.txt
+SEL customer_id, SUM(amount) FROM stg_orders GROUP BY 1 QUALIFY ROW_NUMBER() OVER (ORDER BY SUM(amount) DESC) <= 10;
+.EXPORT RESET
+.IF ACTIVITYCOUNT = 0 THEN .QUIT 4;
+.IMPORT DATA FILE = x.dat;
+.LOGOFF;
+.QUIT 0;

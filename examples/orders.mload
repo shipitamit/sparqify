@@ -1,0 +1,14 @@
+.LOGON tdprod/etl_user,s3cretPwd;
+.LOGTABLE staging.orders_log;
+.BEGIN IMPORT MLOAD TABLES staging.orders;
+.LAYOUT ord_layout;
+.FIELD order_id * VARCHAR(10);
+.FIELD amt * VARCHAR(12);
+.DML LABEL ins_lbl;
+INSERT INTO staging.orders (order_id, amt) VALUES (:order_id, :amt);
+.DML LABEL upd_lbl;
+UPDATE staging.orders SET amt = :amt WHERE order_id = :order_id;
+.IMPORT INFILE /data/in/a.txt FORMAT VARTEXT ',' LAYOUT ord_layout APPLY ins_lbl;
+.IMPORT INFILE /data/in/b.txt FORMAT VARTEXT ',' LAYOUT ord_layout APPLY upd_lbl;
+.END MLOAD;
+.LOGOFF;

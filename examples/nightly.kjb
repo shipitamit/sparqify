@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<job>
+  <name>nightly_orders</name>
+  <entries>
+    <entry><name>START</name><type>SPECIAL</type><start>Y</start><schedulerType>2</schedulerType><hour>3</hour><minutes>30</minutes></entry>
+    <entry><name>Truncate stage</name><type>SQL</type><sql>TRUNCATE TABLE stg.orders</sql></entry>
+    <entry><name>Load orders</name><type>TRANS</type><filename>${Internal.Entry.Current.Directory}/orders.ktr</filename></entry>
+    <entry><name>Notify</name><type>SHELL</type><script>python notify.py --ok</script></entry>
+    <entry><name>Mail on failure</name><type>MAIL</type></entry>
+    <entry><name>Success</name><type>SUCCESS</type></entry>
+  </entries>
+  <hops>
+    <hop><from>START</from><to>Truncate stage</to><enabled>Y</enabled><evaluation>Y</evaluation><unconditional>Y</unconditional></hop>
+    <hop><from>Truncate stage</from><to>Load orders</to><enabled>Y</enabled><evaluation>Y</evaluation><unconditional>N</unconditional></hop>
+    <hop><from>Load orders</from><to>Notify</to><enabled>Y</enabled><evaluation>Y</evaluation><unconditional>N</unconditional></hop>
+    <hop><from>Load orders</from><to>Mail on failure</to><enabled>Y</enabled><evaluation>N</evaluation><unconditional>N</unconditional></hop>
+    <hop><from>Notify</from><to>Success</to><enabled>Y</enabled><evaluation>Y</evaluation><unconditional>Y</unconditional></hop>
+  </hops>
+</job>

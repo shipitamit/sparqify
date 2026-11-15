@@ -1,0 +1,19 @@
+REPLACE PROCEDURE mydb.load_sales (IN p_region VARCHAR(20), IN p_min INTEGER, OUT p_cnt INTEGER)
+BEGIN
+  DECLARE v_total INTEGER DEFAULT 0;
+  DECLARE i INTEGER DEFAULT 0;
+  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION SET v_total = -1;
+  SET v_total = p_min * 2;
+  WHILE i < 3 DO
+    INS INTO tgt SEL region, amt FROM src WHERE region = :p_region AND amt > :v_total;
+    SET i = i + 1;
+  END WHILE;
+  IF v_total > 10 THEN
+    DEL FROM stage ALL;
+  ELSEIF v_total > 5 THEN
+    UPDATE stage SET flag = 1;
+  ELSE
+    SET v_total = 0;
+  END IF;
+  SELECT COUNT(*) INTO p_cnt FROM tgt;
+END;

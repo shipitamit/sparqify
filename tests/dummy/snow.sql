@@ -1,0 +1,2 @@
+SELECT id, IFF(amt>10,'hi','lo') AS band, TO_VARCHAR(dt,'YYYY-MM') AS ym, DATEADD(day,7,dt) AS d7, LISTAGG(tag, ',') WITHIN GROUP (ORDER BY tag) AS t
+FROM t WHERE dt >= DATEADD(month,-1,CURRENT_DATE) GROUP BY id,amt,dt QUALIFY ROW_NUMBER() OVER (PARTITION BY id ORDER BY dt DESC)=1;

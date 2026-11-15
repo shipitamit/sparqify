@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<POWERMART><REPOSITORY NAME="R"><FOLDER NAME="F">
+  <SESSION NAME="s_m_orders_fact" MAPPINGNAME="m_orders_fact"/>
+  <SESSION NAME="s_m_region" MAPPINGNAME="m_region_summary"/>
+  <WORKFLOW NAME="wf_orders">
+    <TASKINSTANCE NAME="Start" TASKNAME="Start" TASKTYPE="Start"/>
+    <TASKINSTANCE NAME="s_m_orders_fact" TASKNAME="s_m_orders_fact" TASKTYPE="Session"/>
+    <TASKINSTANCE NAME="s_m_region" TASKNAME="s_m_region" TASKTYPE="Session"/>
+    <TASKINSTANCE NAME="cmd_archive" TASKNAME="cmd_archive" TASKTYPE="Command"/>
+    <WORKFLOWLINK FROMTASK="Start" TOTASK="s_m_orders_fact"/>
+    <WORKFLOWLINK FROMTASK="s_m_orders_fact" TOTASK="s_m_region"/>
+    <WORKFLOWLINK FROMTASK="s_m_region" TOTASK="cmd_archive" CONDITION="$s_m_region.Status = SUCCEEDED"/>
+  </WORKFLOW>
+</FOLDER></REPOSITORY></POWERMART>

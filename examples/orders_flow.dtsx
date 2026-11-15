@@ -1,0 +1,48 @@
+<?xml version="1.0"?>
+<DTS:Executable xmlns:DTS="www.microsoft.com/SqlServer/Dts" DTS:refId="Package" DTS:ObjectName="OrdersFlow" DTS:ExecutableType="Microsoft.Package">
+  <DTS:ConnectionManagers>
+    <DTS:ConnectionManager DTS:refId="Package.ConnectionManagers[Out File]" DTS:ObjectName="Out File"><DTS:ObjectData><DTS:ConnectionManager DTS:ConnectionString="/out/orders_eu.csv"/></DTS:ObjectData></DTS:ConnectionManager>
+  </DTS:ConnectionManagers>
+  <DTS:Executables>
+    <DTS:Executable DTS:refId="Package\Load Orders" DTS:ObjectName="Load Orders" DTS:ExecutableType="Microsoft.Pipeline">
+      <DTS:ObjectData><pipeline><components>
+        <component refId="Package\Load Orders\OLE DB Source" name="OLE DB Source" componentClassID="Microsoft.OLEDBSource">
+          <properties><property name="SqlCommand">SELECT order_id, customer_id, region, amount, qty FROM dbo.orders</property></properties>
+          <outputs><output refId="Package\Load Orders\OLE DB Source.Outputs[OLE DB Source Output]" name="OLE DB Source Output"/>
+                   <output refId="Package\Load Orders\OLE DB Source.Outputs[OLE DB Source Error Output]" name="OLE DB Source Error Output" isErrorOut="true"/></outputs>
+        </component>
+        <component refId="Package\Load Orders\Derived Column" name="Derived Column" componentClassID="Microsoft.DerivedColumn">
+          <outputs><output refId="Package\Load Orders\Derived Column.Outputs[Derived Column Output]" name="Derived Column Output"><outputColumns>
+            <outputColumn name="total"><properties><property name="Expression">amount * qty</property></properties></outputColumn>
+            <outputColumn name="tier"><properties><property name="Expression">amount &gt; 1000 ? "gold" : "basic"</property></properties></outputColumn>
+            <outputColumn name="label"><properties><property name="Expression">UPPER(region) + "-" + (DT_WSTR,10)order_id</property></properties></outputColumn>
+            <outputColumn name="weird"><properties><property name="Expression">TOKEN(region, "-", 1)</property></properties></outputColumn>
+          </outputColumns></output></outputs>
+        </component>
+        <component refId="Package\Load Orders\Split" name="Split" componentClassID="Microsoft.ConditionalSplit">
+          <outputs>
+            <output refId="Package\Load Orders\Split.Outputs[EU]" name="EU"><properties><property name="EvaluationOrder">0</property><property name="Expression">region == "EU"</property></properties></output>
+            <output refId="Package\Load Orders\Split.Outputs[Split Default Output]" name="Split Default Output"><properties><property name="IsDefaultOut">true</property></properties></output>
+          </outputs>
+        </component>
+        <component refId="Package\Load Orders\Agg" name="Agg" componentClassID="Microsoft.Aggregate">
+          <outputs><output refId="Package\Load Orders\Agg.Outputs[Aggregate Output 1]" name="Aggregate Output 1"><outputColumns>
+            <outputColumn name="customer_id"><properties><property name="AggregationType">0</property><property name="AggregationColumnId">#{Package\Load Orders\Split.Outputs[EU].Columns[customer_id]}</property></properties></outputColumn>
+            <outputColumn name="revenue"><properties><property name="AggregationType">3</property><property name="AggregationColumnId">#{Package\Load Orders\Split.Outputs[EU].Columns[total]}</property></properties></outputColumn>
+          </outputColumns></output></outputs>
+        </component>
+        <component refId="Package\Load Orders\Dest" name="Dest" componentClassID="Microsoft.OLEDBDestination"><properties><property name="OpenRowset">[dbo].[revenue_eu]</property></properties></component>
+        <component refId="Package\Load Orders\Other" name="Other" componentClassID="Microsoft.FuzzyLookup"/>
+        <component refId="Package\Load Orders\File Dest" name="File Dest" componentClassID="Microsoft.FlatFileDestination"><connections><connection connectionManagerRefId="Package.ConnectionManagers[Out File]"/></connections></component>
+      </components>
+      <paths>
+        <path startId="Package\Load Orders\OLE DB Source.Outputs[OLE DB Source Output]" endId="Package\Load Orders\Derived Column.Inputs[Derived Column Input]"/>
+        <path startId="Package\Load Orders\Derived Column.Outputs[Derived Column Output]" endId="Package\Load Orders\Split.Inputs[Split Input]"/>
+        <path startId="Package\Load Orders\Split.Outputs[EU]" endId="Package\Load Orders\Agg.Inputs[Aggregate Input 1]"/>
+        <path startId="Package\Load Orders\Agg.Outputs[Aggregate Output 1]" endId="Package\Load Orders\Dest.Inputs[Destination Input]"/>
+        <path startId="Package\Load Orders\Split.Outputs[Split Default Output]" endId="Package\Load Orders\File Dest.Inputs[Flat File Destination Input]"/>
+        <path startId="Package\Load Orders\Split.Outputs[Split Default Output]" endId="Package\Load Orders\Other.Inputs[Fuzzy Input]"/>
+      </paths></pipeline></DTS:ObjectData>
+    </DTS:Executable>
+  </DTS:Executables>
+</DTS:Executable>

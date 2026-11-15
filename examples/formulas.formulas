@@ -1,0 +1,4 @@
+total = =B2*C2
+tier = =IF(D2>100,"gold",IF(D2>10,"silver","basic"))
+big = =SUMIF(A2:A100,">5",B2:B100)
+=VLOOKUP(A2,Sheet2!A:B,2,FALSE)

@@ -1,0 +1,9 @@
+DEFINE JOB load_orders
+(
+  DEFINE SCHEMA order_schema (order_id VARCHAR(10), cust VARCHAR(30), amt VARCHAR(12));
+  DEFINE OPERATOR file_reader TYPE DATACONNECTOR PRODUCER SCHEMA order_schema
+  ATTRIBUTES (VARCHAR FileName = '/data/in/orders.txt', VARCHAR Format = 'Delimited', VARCHAR TextDelimiter = '|', VARCHAR OpenMode = 'Read');
+  DEFINE OPERATOR td_load TYPE LOAD SCHEMA *
+  ATTRIBUTES (VARCHAR TdpId = 'tdprod', VARCHAR UserName = 'etl_user', VARCHAR UserPassword = 's3cretPwd', VARCHAR TargetTable = 'staging.orders');
+  APPLY ('INSERT INTO staging.orders (order_id, cust, amt) VALUES (:order_id, :cust, :amt);') TO OPERATOR (td_load[2]) SELECT * FROM OPERATOR (file_reader[1]);
+);

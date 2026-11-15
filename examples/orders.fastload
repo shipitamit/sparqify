@@ -1,0 +1,9 @@
+LOGON tdprod/etl_user,s3cretPwd;
+DATABASE staging;
+SET RECORD VARTEXT "|";
+DEFINE order_id (VARCHAR(10)), cust (VARCHAR(30)), amt (VARCHAR(12)), odate (VARCHAR(10))
+  FILE=/data/in/orders.txt;
+BEGIN LOADING staging.orders ERRORFILES staging.orders_e1, staging.orders_e2;
+INSERT INTO staging.orders VALUES (:order_id, :cust, :amt, :odate);
+END LOADING;
+LOGOFF;

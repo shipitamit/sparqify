@@ -1,0 +1,8 @@
+REPLACE MACRO sales_by_region (d DATE, minamt INTEGER) AS (
+  SEL region, SUM(amt) AS total FROM sales WHERE sale_dt = :d AND amt > :minamt GROUP BY 1;
+);
+EXEC sales_by_region('2024-01-31', 100);
+SEL TOP 5 * FROM sales QUALIFY ROW_NUMBER() OVER (PARTITION BY region ORDER BY amt DESC) = 1;
+SEL CAST(sale_dt AS DATE FORMAT 'YYYY-MM-DD'), CSUM(amt, sale_dt) FROM sales SAMPLE 10;
+CREATE MULTISET VOLATILE TABLE vt AS (SEL region FROM sales) WITH DATA ON COMMIT PRESERVE ROWS;
+COLLECT STATISTICS ON sales COLUMN region;

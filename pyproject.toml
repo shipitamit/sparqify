@@ -1,0 +1,19 @@
+[project]
+name = "sparqix"
+version = "0.1.0"
+description = "Convert pandas, SQL dialects, SAS, R, ETL tools (Informatica, Talend, Teradata...) and more into Apache Spark (PySpark / Spark SQL)"
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["spark", "pyspark", "migration", "etl", "teradata", "sql", "converter"]
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+sparqix = "sparqix.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["sparqix"]

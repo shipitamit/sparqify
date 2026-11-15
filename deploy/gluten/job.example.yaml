@@ -1,0 +1,25 @@
+# Run a converted job on your own Spark image with Gluten (no spark-operator needed: Spark in local mode inside one pod).
+# For a real cluster use your usual submission method (spark-operator SparkApplication, spark-submit --master k8s://...); the settings
+# are already in the image's spark-defaults.conf, so they apply to the driver and executors started from this image.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: converted-job-gluten
+  namespace: sparqix
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 185, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: spark
+          image: myorg/spark-gluten:custom
+          # the script comes from a ConfigMap you create from sparqix's output:  kubectl create configmap job --from-file=job.py
+          command: ["/opt/spark/bin/spark-submit"]
+          args: ["--master", "local[*]", "/job/job.py"]       # adjust the path to spark-submit for your image
+          resources: {requests: {cpu: "2", memory: 8Gi}, limits: {cpu: "4", memory: 12Gi}}      # off-heap (default 4g) is on top of the JVM heap
+          securityContext: {allowPrivilegeEscalation: false, capabilities: {drop: ["ALL"]}}
+          volumeMounts: [{name: job, mountPath: /job, readOnly: true}]
+      volumes: [{name: job, configMap: {name: job}}]

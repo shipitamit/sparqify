@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<transformation>
+  <info><name>orders</name></info>
+  <step><name>Read orders</name><type>CsvInput</type><filename>/data/orders.csv</filename><separator>,</separator><header>Y</header></step>
+  <step><name>Read customers</name><type>CsvInput</type><filename>/data/customers.csv</filename><separator>,</separator><header>Y</header></step>
+  <step><name>Big only</name><type>FilterRows</type><send_true_to>Calc</send_true_to><send_false_to>Small out</send_false_to>
+    <compare><condition><negated>N</negated><leftvalue>amount</leftvalue><function>&gt;</function><rightvalue/><value><name>constant</name><type>Integer</type><text>100</text><isnull>N</isnull></value></condition></compare></step>
+  <step><name>Calc</name><type>Calculator</type><calculation><field_name>total</field_name><calc_type>MULTIPLY</calc_type><field_a>amount</field_a><field_b>qty</field_b></calculation></step>
+  <step><name>Sort a</name><type>SortRows</type><fields><field><name>customer_id</name><ascending>Y</ascending></field></fields></step>
+  <step><name>Sort b</name><type>SortRows</type><fields><field><name>customer_id</name><ascending>Y</ascending></field></fields></step>
+  <step><name>Join</name><type>MergeJoin</type><step1>Sort a</step1><step2>Sort b</step2><join_type>LEFT OUTER</join_type><keys_1><key>customer_id</key></keys_1><keys_2><key>customer_id</key></keys_2></step>
+  <step><name>Sum</name><type>GroupBy</type><group><field><name>name</name></field></group><fields><field><aggregate>revenue</aggregate><subject>total</subject><type>SUM</type></field></fields></step>
+  <step><name>Write</name><type>TextFileOutput</type><file><name>/out/revenue</name></file><separator>;</separator></step>
+  <step><name>Small out</name><type>TableOutput</type><schema>stg</schema><table>small_orders</table><truncate>Y</truncate></step>
+  <step><name>Mystery</name><type>Denormaliser</type></step>
+  <order>
+    <hop><from>Read orders</from><to>Big only</to><enabled>Y</enabled></hop>
+    <hop><from>Big only</from><to>Calc</to><enabled>Y</enabled></hop>
+    <hop><from>Big only</from><to>Small out</to><enabled>Y</enabled></hop>
+    <hop><from>Calc</from><to>Sort a</to><enabled>Y</enabled></hop>
+    <hop><from>Read customers</from><to>Sort b</to><enabled>Y</enabled></hop>
+    <hop><from>Sort a</from><to>Join</to><enabled>Y</enabled></hop>
+    <hop><from>Sort b</from><to>Join</to><enabled>Y</enabled></hop>
+    <hop><from>Join</from><to>Sum</to><enabled>Y</enabled></hop>
+    <hop><from>Sum</from><to>Write</to><enabled>Y</enabled></hop>
+  </order>
+</transformation>

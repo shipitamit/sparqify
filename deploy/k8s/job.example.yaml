@@ -1,0 +1,28 @@
+# Batch use: convert a whole repo/folder on a schedule or once. Reads from one PVC, writes to another (or the same, different path).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: sparqix-convert
+  namespace: sparqix
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
+      containers:
+        - name: sparqix
+          image: ghcr.io/YOUR-ORG/sparqix:0.1.0
+          args: ["project", "/in", "-o", "/out"]
+          resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 2Gi}}
+          securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}
+          volumeMounts:
+            - {name: src, mountPath: /in, readOnly: true}
+            - {name: dst, mountPath: /out}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - {name: src, persistentVolumeClaim: {claimName: legacy-etl-code, readOnly: true}}
+        - {name: dst, persistentVolumeClaim: {claimName: spark-code}}
+        - {name: tmp, emptyDir: {}}

@@ -1,0 +1,29 @@
+# Default-deny, then allow only: ingress to port 8765 from the ingress controller namespace, and (optional) egress to DNS + HTTPS
+# for the AI suggestions feature. Delete the HTTPS egress rule if you never use --ai: the app then needs no outbound access at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sparqix
+  namespace: sparqix
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: sparqix}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: ingress-nginx}
+      ports:
+        - {protocol: TCP, port: 8765}
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock: {cidr: 0.0.0.0/0, except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16]}
+      ports:
+        - {protocol: TCP, port: 443}

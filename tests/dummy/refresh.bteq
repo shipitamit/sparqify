@@ -1,0 +1,4 @@
+.LOGON tdp/user,pw
+SEL region, SUM(amt) FROM sales GROUP BY 1;
+.IF ACTIVITYCOUNT = 0 THEN .QUIT 4
+.LOGOFF

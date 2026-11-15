@@ -1,0 +1,88 @@
+BEGIN HEADER
+   CharacterSet "CP1252"
+   ToolInstanceID "DEV"
+END HEADER
+BEGIN DSJOB
+   Identifier "LoadOrders"
+   BEGIN DSRECORD
+      Identifier "V0S1"
+      OLEType "CCustomStage"
+      Name "Orders_File"
+      StageType "PxSequentialFile"
+      OutputPins "V0S1P1"
+      BEGIN DSSUBRECORD
+         Name "File"
+         Value "/data/orders.csv"
+      END DSSUBRECORD
+      BEGIN DSSUBRECORD
+         Name "FirstLineIsColumnNames"
+         Value "True"
+      END DSSUBRECORD
+   END DSRECORD
+   BEGIN DSRECORD
+      Identifier "V0S1P1"
+      OLEType "CCustomOutput"
+      Name "lnk_orders"
+      Partner "V0S2P1"
+   END DSRECORD
+   BEGIN DSRECORD
+      Identifier "V0S2"
+      OLEType "CTransformerStage"
+      Name "Xfm"
+      StageType "CTransformerStage"
+      InputPins "V0S2P1"
+      OutputPins "V0S2P2"
+      BEGIN DSSUBRECORD
+         Name "svBig"
+         Derivation "lnk_orders.amount > 100"
+      END DSSUBRECORD
+   END DSRECORD
+   BEGIN DSRECORD
+      Identifier "V0S2P1"
+      OLEType "CCustomInput"
+      Name "lnk_orders"
+   END DSRECORD
+   BEGIN DSRECORD
+      Identifier "V0S2P2"
+      OLEType "CCustomOutput"
+      Name "lnk_out"
+      Partner "V0S3P1"
+      Constraint "lnk_orders.region = 'EU' And Not(IsNull(lnk_orders.customer_id))"
+      BEGIN DSSUBRECORD
+         Name "order_id"
+         Derivation "lnk_orders.order_id"
+         SqlType "4"
+      END DSSUBRECORD
+      BEGIN DSSUBRECORD
+         Name "total"
+         Derivation "lnk_orders.amount * lnk_orders.qty"
+         SqlType "8"
+      END DSSUBRECORD
+      BEGIN DSSUBRECORD
+         Name "label"
+         Derivation "If svBig Then 'BIG' : '-' : Upcase(lnk_orders.region) Else 'small'"
+         SqlType "12"
+      END DSSUBRECORD
+      BEGIN DSSUBRECORD
+         Name "weird"
+         Derivation "Oconv(lnk_orders.d, 'D4/YMD')"
+         SqlType "12"
+      END DSSUBRECORD
+   END DSRECORD
+   BEGIN DSRECORD
+      Identifier "V0S3"
+      OLEType "CCustomStage"
+      Name "Orders_Out"
+      StageType "ODBCConnectorPX"
+      InputPins "V0S3P1"
+      BEGIN DSSUBRECORD
+         Name "TableName"
+         Value "dw.orders_eu"
+      END DSSUBRECORD
+   END DSRECORD
+   BEGIN DSRECORD
+      Identifier "V0S3P1"
+      OLEType "CCustomInput"
+      Name "lnk_out"
+   END DSRECORD
+END DSJOB

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<talendfile:ProcessType xmlns:talendfile="http://www.talend.org/mapper">
+  <node componentName="tRunJob"><elementParameter name="UNIQUE_NAME" value="tRunJob_1"/><elementParameter name="PROCESS" value="&quot;Load_Customers&quot;"/></node>
+  <node componentName="tRunJob"><elementParameter name="UNIQUE_NAME" value="tRunJob_2"/><elementParameter name="PROCESS" value="&quot;Load_Orders&quot;"/></node>
+  <node componentName="tFileCopy"><elementParameter name="UNIQUE_NAME" value="tFileCopy_1"/></node>
+  <connection connectorName="SUBJOB_OK" source="tRunJob_1" target="tRunJob_2"/>
+  <connection connectorName="RUN_IF" source="tRunJob_2" target="tFileCopy_1"/>
+</talendfile:ProcessType>

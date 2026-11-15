@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sparqix
+  namespace: sparqix
+  labels: {app.kubernetes.io/name: sparqix}
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app.kubernetes.io/name: sparqix}
+  strategy:
+    rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: sparqix}
+    spec:
+      serviceAccountName: sparqix
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: sparqix
+          image: ghcr.io/YOUR-ORG/sparqix:0.1.0     # build and push it first (see deploy/README.md); pin a digest in production
+          imagePullPolicy: IfNotPresent
+          args: ["serve", "--host", "0.0.0.0", "--port", "8765"]
+          ports:
+            - {name: http, containerPort: 8765}
+          env:
+            - name: SPARQIX_TOKEN
+              valueFrom: {secretKeyRef: {name: sparqix, key: token}}
+            # Host header values the app accepts (DNS-rebinding guard): the Service name and your ingress host name(s).
+            - name: SPARQIX_ALLOWED_HOSTS
+              value: "sparqix,sparqix.sparqix,sparqix.sparqix.svc,sparqix.sparqix.svc.cluster.local,sparqix.example.com"
+            # Optional AI features, any provider: SPARQIX_AI_PROVIDER (anthropic, openai, gemini, mistral, groq, together, openrouter, ollama, custom),
+            # SPARQIX_AI_MODEL, and for a self-hosted or gateway endpoint SPARQIX_AI_BASE_URL. The key lives in the Secret, never in the manifest.
+            - name: SPARQIX_AI_API_KEY
+              valueFrom: {secretKeyRef: {name: sparqix, key: ai-api-key, optional: true}}
+          readinessProbe:
+            httpGet: {path: /readyz, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /healthz, port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 1Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: tmp
+          emptyDir: {sizeLimit: 256Mi}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels: {app.kubernetes.io/name: sparqix}

@@ -1,0 +1,5 @@
+library(dplyr)
+library(tidyr)
+d <- read_csv("events.csv") %>% arrange(ts)
+d %>% group_by(user) %>% mutate(prev = lag(amt), run = cumsum(amt)) %>% slice_max(order_by = amt, n = 1)
+wide <- d %>% pivot_wider(names_from = kind, values_from = amt, id_cols = c(user), values_fn = sum)

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<talendfile:ProcessType xmlns:xmi="http://www.omg.org/XMI" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:talendfile="http://www.talend.org/mapper" xmlns:map="http://www.talend.org/mapper">
+  <node componentName="tFileInputDelimited" posX="64" posY="64">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tFileInputDelimited_1"/>
+    <elementParameter field="FILE" name="FILENAME" value="&quot;/data/orders.csv&quot;"/>
+    <elementParameter field="TEXT" name="FIELDSEPARATOR" value="&quot;,&quot;"/>
+    <elementParameter field="TEXT" name="HEADER" value="1"/>
+  </node>
+  <node componentName="tFileInputDelimited" posX="64" posY="160">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tFileInputDelimited_2"/>
+    <elementParameter field="FILE" name="FILENAME" value="&quot;/data/customers.csv&quot;"/>
+    <elementParameter field="TEXT" name="FIELDSEPARATOR" value="&quot;,&quot;"/>
+    <elementParameter field="TEXT" name="HEADER" value="1"/>
+  </node>
+  <node componentName="tFilterRow" posX="200" posY="64">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tFilterRow_1"/>
+    <elementParameter field="TABLE" name="CONDITIONS">
+      <elementValue elementRef="INPUT_COLUMN" value="amount"/>
+      <elementValue elementRef="FUNCTION" value="EMPTY"/>
+      <elementValue elementRef="OPERATOR" value="GT"/>
+      <elementValue elementRef="RVALUE" value="100"/>
+    </elementParameter>
+  </node>
+  <node componentName="tMap" posX="340" posY="64">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tMap_1"/>
+    <nodeData xsi:type="map:MapperData">
+      <inputTables name="row2"><mapperTableEntries name="order_id" expression="row2.order_id"/></inputTables>
+      <inputTables name="row3" matchingMode="UNIQUE_MATCH" lookupMode="LOAD_ONCE" joinModel="LEFT_OUTER_JOIN"><mapperTableEntries name="customer_id" expression="row2.customer_id"/><mapperTableEntries name="name"/></inputTables>
+      <outputTables name="out1">
+        <mapperTableEntries name="order_id" expression="row2.order_id"/>
+        <mapperTableEntries name="customer" expression="row3.name.toUpperCase()"/>
+        <mapperTableEntries name="total" expression="row2.amount * row2.qty"/>
+        <mapperTableEntries name="label" expression="StringHandling.UPCASE(row2.region) + &quot;-x&quot;"/>
+      </outputTables>
+    </nodeData>
+  </node>
+  <node componentName="tAggregateRow" posX="480" posY="64">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tAggregateRow_1"/>
+    <elementParameter field="TABLE" name="GROUPBYS"><elementValue elementRef="OUTPUT_COLUMN" value="customer"/><elementValue elementRef="INPUT_COLUMN" value="customer"/></elementParameter>
+    <elementParameter field="TABLE" name="OPERATIONS"><elementValue elementRef="OUTPUT_COLUMN" value="revenue"/><elementValue elementRef="FUNCTION" value="sum"/><elementValue elementRef="INPUT_COLUMN" value="total"/></elementParameter>
+  </node>
+  <node componentName="tSortRow" posX="600" posY="64">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tSortRow_1"/>
+    <elementParameter field="TABLE" name="CRITERIA"><elementValue elementRef="COLNAME" value="revenue"/><elementValue elementRef="SORT" value="num"/><elementValue elementRef="ORDER" value="desc"/></elementParameter>
+  </node>
+  <node componentName="tFileOutputDelimited" posX="720" posY="64">
+    <elementParameter field="TEXT" name="UNIQUE_NAME" value="tFileOutputDelimited_1"/>
+    <elementParameter field="FILE" name="FILENAME" value="&quot;/out/revenue.csv&quot;"/>
+  </node>
+  <connection connectorName="FLOW" label="row1" source="tFileInputDelimited_1" target="tFilterRow_1"/>
+  <connection connectorName="FILTER" label="row2" source="tFilterRow_1" target="tMap_1"/>
+  <connection connectorName="FLOW" label="row3" source="tFileInputDelimited_2" target="tMap_1"/>
+  <connection connectorName="FLOW" label="out1" source="tMap_1" target="tAggregateRow_1"/>
+  <connection connectorName="FLOW" label="row4" source="tAggregateRow_1" target="tSortRow_1"/>
+  <connection connectorName="FLOW" label="row5" source="tSortRow_1" target="tFileOutputDelimited_1"/>
+</talendfile:ProcessType>

@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<DTS:Executable xmlns:DTS="www.microsoft.com/SqlServer/Dts" DTS:ObjectName="LoadOrders" DTS:ExecutableType="Microsoft.Package">
+  <DTS:Executables>
+    <DTS:Executable DTS:refId="Package\Truncate Stage" DTS:ObjectName="Truncate Stage" DTS:ExecutableType="Microsoft.ExecuteSQLTask">
+      <DTS:ObjectData><SQLTask:SqlTaskData xmlns:SQLTask="www.microsoft.com/sqlserver/dts/tasks/sqltask" SQLTask:SqlStatementSource="TRUNCATE TABLE dbo.stg_orders"/></DTS:ObjectData>
+    </DTS:Executable>
+    <DTS:Executable DTS:refId="Package\Load Orders" DTS:ObjectName="Load Orders" DTS:ExecutableType="Microsoft.Pipeline">
+      <DTS:ObjectData><pipeline><components>
+        <component name="OLE DB Source" componentClassID="Microsoft.OLEDBSource"/>
+        <component name="Derived Column" componentClassID="Microsoft.DerivedColumn"/>
+        <component name="OLE DB Destination" componentClassID="Microsoft.OLEDBDestination"/>
+      </components></pipeline></DTS:ObjectData>
+    </DTS:Executable>
+    <DTS:Executable DTS:refId="Package\Archive" DTS:ObjectName="Archive" DTS:ExecutableType="Microsoft.ExecuteProcess">
+      <DTS:ObjectData><ExecuteProcessData Executable="python" Arguments="archive.py --days 30"/></DTS:ObjectData>
+    </DTS:Executable>
+  </DTS:Executables>
+  <DTS:PrecedenceConstraints>
+    <DTS:PrecedenceConstraint DTS:From="Package\Truncate Stage" DTS:To="Package\Load Orders" DTS:Value="0"/>
+    <DTS:PrecedenceConstraint DTS:From="Package\Load Orders" DTS:To="Package\Archive" DTS:Value="2"/>
+  </DTS:PrecedenceConstraints>
+</DTS:Executable>

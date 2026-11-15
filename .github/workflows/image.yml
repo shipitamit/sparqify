@@ -1,0 +1,74 @@
+name: image
+on:
+  pull_request:          # plain pull_request only: fork code must not run with write tokens
+    paths: [Dockerfile, sparqix/**, deploy/**, pyproject.toml, .github/workflows/image.yml]
+  push:
+    branches: [main]
+    tags: ["v*"]
+permissions:
+  contents: read
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write      # upload the scan to code scanning
+    steps:
+      # Run scripts/pin_actions.sh once to replace these version tags with full commit SHAs.
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build image (not pushed)
+        run: docker build -t sparqix:ci .
+      - name: Scan image (fails on HIGH/CRITICAL with a fix available)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: sparqix:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy.sarif
+      - name: Upload scan results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with: {sarif_file: trivy.sarif}
+      - name: Image runs as non-root and serves probes
+        run: |
+          test "$(docker run --rm --entrypoint id sparqix:ci -u)" = "10001"
+          docker run -d --name s -e SPARQIX_TOKEN=ci --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -p 8765:8765 sparqix:ci
+          for i in $(seq 20); do curl -fs localhost:8765/healthz && break; sleep 1; done
+          code=$(curl -s -o /dev/null -w '%{http_code}' localhost:8765/api/examples); test "$code" = 401
+      - name: Validate Kubernetes manifests
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz | tar xz
+          ./kubeconform -strict -summary deploy/k8s/deployment.yaml deploy/k8s/service.yaml deploy/k8s/networkpolicy.yaml deploy/k8s/pdb.yaml deploy/k8s/hpa.yaml deploy/k8s/namespace.yaml deploy/k8s/serviceaccount.yaml
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: build-scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write           # keyless signing
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: docker/login-action@v3
+        with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
+      - uses: docker/build-push-action@v6
+        id: push
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          provenance: true
+          sbom: true
+      - uses: sigstore/cosign-installer@v3
+      - name: Sign the image by digest
+        run: cosign sign --yes ghcr.io/${{ github.repository }}@${{ steps.push.outputs.digest }}

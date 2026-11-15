@@ -1,0 +1,19 @@
+# Example: terminate TLS at the ingress. Plain HTTP must never be exposed outside the cluster (the token travels in a header).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sparqix
+  namespace: sparqix
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "30m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [sparqix.example.com]
+      secretName: sparqix-tls
+  rules:
+    - host: sparqix.example.com
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: sparqix, port: {name: http}}}}

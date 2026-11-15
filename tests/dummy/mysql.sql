@@ -1,0 +1,1 @@
+SELECT id, IFNULL(a,0), DATE_FORMAT(dt,'%Y-%m-%d') ymd, GROUP_CONCAT(tag SEPARATOR ',') FROM t GROUP BY id,a,dt LIMIT 5, 10;

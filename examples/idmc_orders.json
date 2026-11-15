@@ -1,0 +1,23 @@
+{
+  "name": "mt_orders_fact",
+  "transformations": [
+    {"name": "Src_Orders", "type": "source", "objectName": "SALES.ORDERS",
+     "fields": [{"name": "ORDER_ID", "type": "bigint"}, {"name": "AMOUNT", "type": "decimal"},
+                {"name": "STATUS", "type": "string"}, {"name": "ORDER_DT", "type": "date"}]},
+    {"name": "Fil_Valid", "type": "filter", "filterCondition": "STATUS != 'X' AND NOT ISNULL(AMOUNT)",
+     "fields": [{"name": "ORDER_ID"}, {"name": "AMOUNT"}, {"name": "STATUS"}, {"name": "ORDER_DT"}]},
+    {"name": "Exp_Calc", "type": "expression",
+     "fields": [{"name": "ORDER_ID", "direction": "inputoutput"}, {"name": "AMOUNT", "direction": "input"},
+                {"name": "ORDER_DT", "direction": "input"},
+                {"name": "TOTAL", "direction": "output", "expression": "ROUND(AMOUNT * 1.1, 2)"},
+                {"name": "ORDER_YM", "direction": "output", "expression": "TO_CHAR(ORDER_DT, 'YYYYMM')"},
+                {"name": "TIER", "direction": "output", "expression": "IIF(AMOUNT > 1000, 'gold', 'basic')"}]},
+    {"name": "Tgt_Fact", "type": "target", "objectName": "SALES.ORDERS_FACT",
+     "fields": [{"name": "ORDER_ID"}, {"name": "TOTAL"}, {"name": "ORDER_YM"}, {"name": "TIER"}]}
+  ],
+  "links": [
+    {"from": "Src_Orders", "to": "Fil_Valid"},
+    {"from": "Fil_Valid", "to": "Exp_Calc"},
+    {"from": "Exp_Calc", "to": "Tgt_Fact"}
+  ]
+}

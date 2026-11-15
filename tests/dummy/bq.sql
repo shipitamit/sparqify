@@ -1,0 +1,2 @@
+SELECT user_id, ARRAY_AGG(event ORDER BY ts LIMIT 3) AS evs, SAFE_DIVIDE(a,b) AS r, FORMAT_DATE('%Y-%m', dt) AS ym
+FROM `proj.ds.events` WHERE dt BETWEEN DATE_SUB(CURRENT_DATE(), INTERVAL 30 DAY) AND CURRENT_DATE() GROUP BY user_id,a,b,dt;

@@ -1,0 +1,4 @@
+MAILTO=ops@example.com
+15 3 * * * cd /opt/etl && python3 daily_load.py --full
+0 */6 * * 0,6 /usr/bin/spark-submit /opt/etl/weekend.py
+@hourly beeline -u jdbc:hive2://x -f /opt/etl/agg.sql
