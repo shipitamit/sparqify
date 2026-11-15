@@ -8,6 +8,8 @@ RUN pip install --no-cache-dir --prefix=/install .
 
 FROM python:3.12-slim
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=random
+# Pull in Debian security fixes published after the base image was built (e.g. the zlib1g HIGH CVEs the CI scan flagged)
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*
 RUN groupadd -g 10001 sparqix && useradd -u 10001 -g 10001 -M -s /usr/sbin/nologin sparqix
 COPY --from=build /install /usr/local
 COPY examples /opt/sparqix/examples
