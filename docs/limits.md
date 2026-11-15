@@ -15,7 +15,7 @@ sparqix is a **migration aid, not a guarantee**. Review every converted file bef
 | Java output | Type-checked with `javac` against hand-written Spark API stubs, not real Spark jars |
 | Scala output | Never compiled |
 | SQL dialects | Checked on hand-written examples, not against real database engines |
-| Teradata, SAS, ETL tools | Best effort; the original tools were not available to compare against. The Pentaho, Pig, Informatica PowerCenter and SSIS conversions run on real Spark against hand-computed results (`tests/test_e2e_etl.py`); the T-SQL, Oracle and Teradata stored-procedure examples run on real Spark for SELECT/INSERT, control flow and OUT values (UPDATE, DELETE and MERGE are syntax-checked by Spark's parser but not executed: they need Delta); DataStage, Alteryx and Talend do not yet |
+| Teradata, SAS, ETL tools | Best effort; the original tools were not available to compare against. The Pentaho, Pig, Informatica PowerCenter, SSIS, DataStage, Alteryx and Talend conversions run on real Spark against hand-computed results (`tests/test_e2e_etl.py`); the T-SQL, Oracle and Teradata stored-procedure examples run on real Spark for SELECT/INSERT, control flow and OUT values (UPDATE, DELETE and MERGE are syntax-checked by Spark's parser but not executed: they need Delta) |
 
 ## Verify loop (`sparqix verify`)
 - Can run the original for pandas, Polars, Dask, notebooks, SQL (DuckDB or SQLite) and R.

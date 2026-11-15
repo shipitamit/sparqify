@@ -30,17 +30,18 @@ def _spark_environment_is_usable():
             pytest.fail(f"pyspark {pyspark.__version__} needs `distutils`, which this Python lacks. Use Python 3.11 (what CI uses) or pyspark>=4.")
 
 
-def _write_inputs(root, header):
+def _write_inputs(root, header, orders=None):
     os.makedirs(os.path.join(root, "data"))
-    pd.DataFrame(ORDERS, columns=["order_id", "customer_id", "region", "amount", "qty"]).to_csv(os.path.join(root, "data", "orders.csv"), index=False, header=header)
+    (orders if orders is not None else pd.DataFrame(ORDERS, columns=["order_id", "customer_id", "region", "amount", "qty"])).to_csv(
+        os.path.join(root, "data", "orders.csv"), index=False, header=header)
     pd.DataFrame(CUSTOMERS, columns=["customer_id", "name"]).to_csv(os.path.join(root, "data", "customers.csv"), index=False, header=header)
 
 
-def _run(example, language, tmp_path, header, rewrites=()):
+def _run(example, language, tmp_path, header, rewrites=(), orders=None):
     """convert `example`, point its /data and /out paths into tmp_path, run it on Spark, return (namespace, report)"""
     code, report = convert(open(os.path.join(EX, example)).read(), language, filename=os.path.join(EX, example))
     root = str(tmp_path)
-    _write_inputs(root, header)
+    _write_inputs(root, header, orders)
     code = code.replace("'/data/", f"'{root}/data/").replace("'/out/", f"'{root}/out/")
     for old, new in rewrites:
         assert old in code, old
@@ -287,3 +288,49 @@ def test_teradata_procedure_matches_expected(proc_env, p_min, expect_dml, expect
     assert sp.table("tgt").count() == 3 * n == expect_rows                 # the WHILE loop inserts three times
     assert out == {"p_cnt": expect_rows}                                   # SELECT COUNT(*) INTO p_cnt
     assert [x[0] for x in ps.log] == ([expect_dml] if expect_dml else [])  # >10 deletes, >5 updates, else v_total = 0 (no statement)
+
+
+# ------------------------------------------------------------------------------------------------ DataStage, Alteryx, Talend
+def _orders_df():
+    return pd.DataFrame(ORDERS, columns=["order_id", "customer_id", "region", "amount", "qty"])
+
+
+def test_datastage_job_matches_expected(tmp_path):
+    ns, rep = _run("job_orders.dsx", "datastage", tmp_path, header=True,
+                   rewrites=[(".saveAsTable('dw.orders_eu')", ".parquet('{root}/out/orders_eu')")])         # no metastore in the test
+    ns["job_loadorders"]()
+    o = _orders_df()
+    eu = o[(o["region"] == "EU") & o["customer_id"].notna()]                                     # constraint: region = 'EU' and customer_id is not null
+    exp = pd.DataFrame({"order_id": eu["order_id"], "total": eu["amount"] * eu["qty"],
+                        "label": ["BIG-EU" if a > 100 else "small" for a in eu["amount"]]})      # stage variable svBig = amount > 100
+    got = ns["spark"].read.parquet(f"{tmp_path}/out/orders_eu").toPandas()
+    _eq(exp, got[["order_id", "total", "label"]], "orders_eu")
+    assert got["weird"].isna().all()                          # the Oconv() derivation it cannot translate: an empty string column, still writable
+    assert any("Oconv" in str(t) for t in rep.todos)
+
+
+def test_alteryx_workflow_matches_expected(tmp_path):
+    o = _orders_df().assign(od=["2024-01-15", "2024-02-10", "2024-02-20", "2024-03-05", "2024-03-06", "2024-03-07", "2024-04-01", "2024-04-02"])
+    ns, rep = _run("flow_orders.yxmd", "alteryx", tmp_path, header=True, orders=o)
+    big = o[(o["amount"] > 100) & (o["region"] == "EU")].assign(total=lambda d: d["amount"] * d["qty"])
+    j = big.merge(pd.DataFrame(CUSTOMERS, columns=["customer_id", "name"]), on="customer_id", how="inner")
+    exp = j.groupby("name")["total"].sum().reset_index(name="revenue")
+    _eq(exp, ns["t7"].toPandas(), "revenue per customer")
+    _eq(exp, _csv_out(tmp_path, "revenue.csv"), "revenue.csv")
+    _eq(o[~((o["amount"] > 100) & (o["region"] == "EU"))][["order_id", "customer_id", "region", "amount", "qty", "od"]],
+        ns["t3_f"].toPandas()[["order_id", "customer_id", "region", "amount", "qty", "od"]], "the filter's False output")
+    assert ns["t4"].toPandas()["d"].astype(str).isin(["2024"]).all()                                  # formula: year of the order date
+    assert any("Buffer" in str(t) for t in rep.todos)
+
+
+def test_talend_job_matches_expected(tmp_path):
+    ns, rep = _run("job_orders.item", "talend", tmp_path, header=True)
+    o = _orders_df()
+    big = o[o["amount"] > 100].assign(total=lambda d: d["amount"] * d["qty"])
+    j = big.merge(pd.DataFrame(CUSTOMERS, columns=["customer_id", "name"]), on="customer_id", how="left")
+    j["customer"] = j["name"].str.upper()                                                            # customer 4 has no name: a NULL group
+    exp = j.groupby("customer", dropna=False)["total"].sum().reset_index(name="revenue")
+    _eq(exp, ns["tSortRow_1"].toPandas(), "revenue per customer")
+    _eq(exp, _csv_out(tmp_path, "revenue.csv", sep=";"), "revenue.csv written with ';'")
+    assert list(ns["tSortRow_1"].toPandas()["revenue"]) == sorted(exp["revenue"], reverse=True)       # tSortRow: descending
+    assert not rep.todos

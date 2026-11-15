@@ -235,7 +235,7 @@ def _job(job, report):
                     except Unsupported as e:
                         report.todo(where, f"derivation of {cn} not translated ({e}): {dv}")
                         lines.append(f"# TODO(sparqix): derivation {cm(cn)} = {cm(dv)}")
-                        cols.append(f"F.lit(None).alias({cn!r})")
+                        cols.append(f"F.lit(None).cast('string').alias({cn!r})")      # a bare F.lit(None) is a VOID column, which Spark cannot write
                 lines.append(f"{lv} = {base}.select({', '.join(cols)})" if cols else f"{lv} = {base}")
                 out[p] = lv
             if len(opins) > 1:

@@ -3221,3 +3221,9 @@ def test_untranslated_ssis_expression_is_a_string_column_not_void():
     code, rep = convert(open(p).read(), "ssis", filename=p)
     assert "withColumn('weird', F.lit(None).cast('string'))" in code and any("TOKEN" in str(t) for t in rep.todos)
     assert "TODO(sparqix): Derived Column weird" in code
+
+
+def test_untranslated_datastage_derivation_is_a_string_column_not_void():
+    p = os.path.join(HERE, "..", "examples", "job_orders.dsx")
+    code, rep = convert(open(p).read(), "datastage", filename=p)
+    assert "F.lit(None).cast('string').alias('weird')" in code and "TODO(sparqix): derivation weird" in code and rep.todos
