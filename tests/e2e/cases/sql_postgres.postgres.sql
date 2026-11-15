@@ -1,6 +1,6 @@
-SELECT region, DATE_TRUNC('month', dt) AS month, SUM(amount)::numeric(12,2) AS total
+SELECT region, DATE_TRUNC('month', CAST(dt AS DATE)) AS month, SUM(amount)::numeric(12,2) AS total
 FROM sales
-GROUP BY region, DATE_TRUNC('month', dt)
+GROUP BY region, DATE_TRUNC('month', CAST(dt AS DATE))
 ORDER BY region, month;
 
 SELECT id, customer
