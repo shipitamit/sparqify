@@ -458,6 +458,11 @@ def test_compare_frames_treats_date_as_midnight_timestamp():
     assert compare_frames(a, b) == []
     b2 = pd.DataFrame({"dt": [datetime.date(2024, 4, 9), datetime.date(2024, 5, 2)], "v": [1, 2]})
     assert compare_frames(a, b2)           # a different day is still a difference
+    txt = pd.DataFrame({"dt": ["2024-04-09", "2024-05-01"], "v": [1, 2]})          # R's read.csv keeps dates as text
+    assert compare_frames(txt, b) == [] and compare_frames(b, txt) == []
+    assert compare_frames(pd.DataFrame({"dt": ["2024-04-09", "2024-05-02"], "v": [1, 2]}), b)
+    words = pd.DataFrame({"dt": ["north", "south"], "v": [1, 2]})                 # text that is not a date stays a difference
+    assert compare_frames(words, b)
 
 
 def test_verify_end_to_end():

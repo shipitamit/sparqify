@@ -38,7 +38,19 @@ def _norm(df):
 
 def compare_frames(a, b, rtol: float = 1e-6):
     """Return a list of human-readable differences (empty list == equal)."""
+    import datetime
     import pandas as pd
+    a, b = a.rename(columns=str).copy(), b.rename(columns=str).copy()
+    for c in set(a.columns) & set(b.columns):
+        # a date column that one side holds as text (R's read.csv) and the other as dates (Spark's inferSchema): same day, compare as timestamps
+        for x, y in ((a, b), (b, a)):
+            xv = x[c].dropna()
+            if len(xv) and all(isinstance(v, str) for v in xv) and (
+                    str(y[c].dtype).startswith("datetime64")
+                    or (y[c].dtype == object and len(y[c].dropna()) and all(isinstance(v, datetime.date) for v in y[c].dropna()))):
+                parsed = pd.to_datetime(x[c], errors="coerce", format="%Y-%m-%d")
+                if parsed.notna().sum() == x[c].notna().sum():
+                    x[c] = parsed
     a, b = _norm(a), _norm(b)
     diffs = []
     if set(a.columns) != set(b.columns):
