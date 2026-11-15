@@ -162,7 +162,7 @@ def _flow(pipe, conns, report, tname):
                 except Unsupported as e:
                     report.todo(where, f"Derived Column {nm}: expression not translated ({e}): {ex}")
                     lines.append(f"# TODO(sparqix): Derived Column {cm(nm)} = {cm(ex)}")
-                    code = "F.lit(None)"
+                    code = "F.lit(None).cast('string')"          # a bare F.lit(None) is a VOID column, which Spark cannot write to CSV or parquet
                 lines.append(f"{var} = {cur}.withColumn({nm!r}, {code})")
                 cur = var
             if cur == main:

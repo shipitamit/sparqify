@@ -22,7 +22,7 @@ def to_col(e: str, where, report: Report) -> str:
     except Unsupported as ex:
         report.todo(where, f"Alteryx expression not translated ({ex}): {e}")
         _CMT.append(f"# TODO(sparqix): Alteryx expression `{cm((e or '').strip())}` is not translated")
-        return "F.lit(None)"
+        return "F.lit(None).cast('string')"          # a bare F.lit(None) is a VOID column, which Spark cannot write to CSV or parquet
 
 
 def _ident(s):

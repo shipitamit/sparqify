@@ -3212,3 +3212,12 @@ def test_pandas_row_filter_keeps_the_sort_order_for_later_windows():
                f"small = {pick}\nsmall['p'] = small.groupby('customer')['qty'].cumprod()\n")
         code, rep = convert(src, "pandas")
         assert "orderBy(F.col('customer').asc(), F.col('id').asc())" in code and "monotonically_increasing_id" not in code, pick
+
+
+def test_untranslated_ssis_expression_is_a_string_column_not_void():
+    """a bare F.lit(None) is a VOID column: Spark refuses to write it to CSV or parquet. The placeholder for an expression that could not be
+    translated must be a string column (the TODO comment stays)"""
+    p = os.path.join(HERE, "..", "examples", "orders_flow.dtsx")
+    code, rep = convert(open(p).read(), "ssis", filename=p)
+    assert "withColumn('weird', F.lit(None).cast('string'))" in code and any("TOKEN" in str(t) for t in rep.todos)
+    assert "TODO(sparqix): Derived Column weird" in code
