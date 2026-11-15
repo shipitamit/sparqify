@@ -2870,3 +2870,28 @@ def test_pandas_rank_becomes_window_rank():
     assert not rep.todos
     _, rep = convert("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf['r'] = df.groupby('g')['v'].rank()\n", "pandas")
     assert rep.todos            # default method='average' has no Spark equivalent
+
+
+def test_converted_run_makes_relative_spark_paths_absolute(tmp_path, monkeypatch):
+    """Spark resolves relative paths in the JVM's own working directory, not the folder verify() chdir()s to
+    (found by the spark-e2e job: PATH_NOT_FOUND in a deleted temp folder of an earlier case)."""
+    import sys
+    import types
+    seen = []
+
+    class Reader:
+        def csv(self, path, **kw):
+            seen.append(path)
+            return path
+    rw = types.ModuleType("pyspark.sql.readwriter")
+    rw.DataFrameReader = Reader
+    rw.DataFrameWriter = type("W", (), {})
+    sql = types.ModuleType("pyspark.sql")
+    sql.readwriter = rw
+    monkeypatch.setitem(sys.modules, "pyspark", types.ModuleType("pyspark"))
+    monkeypatch.setitem(sys.modules, "pyspark.sql", sql)
+    monkeypatch.setitem(sys.modules, "pyspark.sql.readwriter", rw)
+    from sparqix.verify import _converted_ns
+    ns = _converted_ns("pandas", "from pyspark.sql.readwriter import DataFrameReader as R\nx = R().csv('a.csv')\ny = R().csv('/abs/b.csv')\nz = R().csv('s3://b/c.csv')\n", str(tmp_path))
+    assert seen == [str(tmp_path / "a.csv"), "/abs/b.csv", "s3://b/c.csv"]
+    assert Reader().csv("a.csv") == "a.csv"          # restored afterwards

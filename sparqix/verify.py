@@ -266,7 +266,38 @@ def _converted_ns(language, code, workdir):
         return _conv_sql(code, workdir)
     if language == "notebook":
         code = _notebook_code(code)
-    return _run(code, workdir)
+    # Spark resolves relative paths against the JVM's working directory, which os.chdir() in this process does not change (and which is
+    # whatever folder the first session was started in). Make the relative data paths of the converted script absolute, inside `workdir`.
+    patched = []
+    try:
+        from pyspark.sql import readwriter as _rw
+        import functools
+
+        def _fix(p):
+            return os.path.join(workdir, p) if isinstance(p, str) and "://" not in p and not os.path.isabs(p) and not p.startswith("file:") else p
+
+        def _wrap(orig):
+            @functools.wraps(orig)
+            def f(self, *a, **k):
+                if a:
+                    a = ([_fix(x) for x in a[0]] if isinstance(a[0], (list, tuple)) else _fix(a[0]),) + a[1:]
+                if "path" in k:
+                    k["path"] = _fix(k["path"])
+                return orig(self, *a, **k)
+            return f
+        for cls, names in ((_rw.DataFrameReader, ("csv", "json", "parquet", "orc", "text", "load")),
+                           (_rw.DataFrameWriter, ("csv", "json", "parquet", "orc", "text", "save"))):
+            for nm in names:
+                if hasattr(cls, nm):
+                    patched.append((cls, nm, getattr(cls, nm)))
+                    setattr(cls, nm, _wrap(getattr(cls, nm)))
+    except ImportError:
+        pass
+    try:
+        return _run(code, workdir)
+    finally:
+        for cls, nm, fn in patched:
+            setattr(cls, nm, fn)
 
 
 def _default_names(orig):
