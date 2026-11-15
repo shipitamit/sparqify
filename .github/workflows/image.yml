@@ -23,12 +23,21 @@ jobs:
         with: {persist-credentials: false}
       - name: Build image (not pushed)
         run: docker build -t sparqix:ci .
+      - name: Show HIGH/CRITICAL findings with a fix available (log only)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: sparqix:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "0"
+          format: table
       - name: Scan image (fails on HIGH/CRITICAL with a fix available)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: sparqix:ci
           severity: HIGH,CRITICAL
           ignore-unfixed: true
+          limit-severities-for-sarif: true     # without this, SARIF output ignores `severity` and the gate fails on every finding
           exit-code: "1"
           format: sarif
           output: trivy.sarif
