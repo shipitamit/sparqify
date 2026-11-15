@@ -3202,3 +3202,13 @@ def test_compare_frames_treats_decimal_like_float():
     n = pd.DataFrame({"k": ["a"], "v": [None]})
     m = pd.DataFrame({"k": ["a"], "v": [decimal.Decimal("1")]})
     assert compare_frames(n, m)                                     # NULL vs a number still differs
+
+
+def test_pandas_row_filter_keeps_the_sort_order_for_later_windows():
+    """df[mask] and df.loc[mask] keep pandas' row order, so a later cumulative/shift window must order by the sort columns, not by monotonically_increasing_id()
+    (after other windows Spark's physical row order is not the sorted order any more: found by the real-Spark e2e)"""
+    for pick in ("df[df['qty'] <= 3]", "df.loc[df['qty'] <= 3]", "df[df['qty'] <= 3].copy()"):
+        src = ("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf = df.sort_values(['customer', 'id'])\n"
+               f"small = {pick}\nsmall['p'] = small.groupby('customer')['qty'].cumprod()\n")
+        code, rep = convert(src, "pandas")
+        assert "orderBy(F.col('customer').asc(), F.col('id').asc())" in code and "monotonically_increasing_id" not in code, pick

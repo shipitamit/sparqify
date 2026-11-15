@@ -259,7 +259,7 @@ class Translator:
                 raise Unsupported("positional slicing needs an explicit ordering column")
             idx = self.visit(sl)
             if idx.kind == "col" and idx.boolean:
-                return V("df", f"{base.code}.filter({strip_parens(idx.code)})")
+                return V("df", f"{base.code}.filter({strip_parens(idx.code)})", order=base.order)       # a row filter keeps the sort order
             raise Unsupported("cannot tell what this df[...] selects")
         if base.kind == "gb":
             cols = self.names(sl)
@@ -291,7 +291,7 @@ class Translator:
             return V("df", f"{code}.select({', '.join(cols)})")
         mask = self.visit(sl)
         if mask.kind == "col" and mask.boolean:
-            return V("df", f"{recv.code}.filter({strip_parens(mask.code)})")
+            return V("df", f"{recv.code}.filter({strip_parens(mask.code)})", order=recv.order)
         raise Unsupported("unsupported .loc selector")
 
     # ------------------------------------------------------------ calls
