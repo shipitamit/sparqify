@@ -5,7 +5,7 @@ metadata:
   namespace: sparqix
   labels: {app.kubernetes.io/name: sparqix}
 spec:
-  replicas: 2
+  # no `replicas:` on purpose: the HorizontalPodAutoscaler (hpa.yaml, minReplicas 2) owns it, so re-applying this file never resets the count
   selector:
     matchLabels: {app.kubernetes.io/name: sparqix}
   strategy:
@@ -47,6 +47,10 @@ spec:
             - {name: SPARQIX_MAX_CONCURRENT, value: "3"}
             - {name: SPARQIX_WORKER_MEMORY_MB, value: "768"}
             - {name: SPARQIX_DRAIN_SECONDS, value: "150"}
+            # One ingress in front: the client address (failed-token throttle, access log) comes from X-Forwarded-For, and HSTS is sent for https requests.
+            # Only correct while the NetworkPolicy lets nothing but the ingress controller reach the pod. Set 0 if you connect without a proxy.
+            - {name: SPARQIX_TRUSTED_PROXIES, value: "1"}
+            - {name: SPARQIX_ACCESS_LOG, value: "1"}          # one JSON line per request on stderr (no query string, no token)
             - name: SPARQIX_AI_API_KEY
               valueFrom: {secretKeyRef: {name: sparqix, key: ai-api-key, optional: true}}
           lifecycle:

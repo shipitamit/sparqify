@@ -333,6 +333,39 @@ def _throttled(ip: str, record: bool = False) -> bool:
         return len(hits) >= MAX_FAILS
 
 
+_stats_lock = threading.Lock()
+_stats = {"requests": {}, "conversions": {"ok": 0, "error": 0, "timeout": 0}, "throttled": 0, "in_flight": 0}
+
+
+def _count(group: str, key: str, n: int = 1) -> None:
+    with _stats_lock:
+        _stats[group][key] = _stats[group].get(key, 0) + n
+
+
+def _metrics_text() -> str:
+    """Prometheus text format: counters only, no labels that come from input"""
+    with _stats_lock:
+        reqs, conv = dict(_stats["requests"]), dict(_stats["conversions"])
+        thr, fly = _stats["throttled"], _stats["in_flight"]
+    out = ["# TYPE sparqix_http_requests_total counter"]
+    out += [f'sparqix_http_requests_total{{code="{int(c)}"}} {n}' for c, n in sorted(reqs.items())]
+    out += ["# TYPE sparqix_conversions_total counter"]
+    out += [f'sparqix_conversions_total{{result="{r}"}} {n}' for r, n in sorted(conv.items())]
+    out += ["# TYPE sparqix_throttled_total counter", f"sparqix_throttled_total {thr}",
+            "# TYPE sparqix_conversions_in_flight gauge", f"sparqix_conversions_in_flight {fly}",
+            "# TYPE sparqix_max_concurrent gauge", f"sparqix_max_concurrent {MAX_CONCURRENT}", ""]
+    return "\n".join(out)
+
+
+def _norm_netloc(v: str) -> str:
+    """host[:port] in lower case, without the default ports (browsers leave them out of Origin, proxies may keep them in Host)"""
+    v = (v or "").strip().lower()
+    for d in (":80", ":443"):
+        if v.endswith(d):
+            return v[:-len(d)]
+    return v
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "sparqix"
     sys_version = ""
@@ -340,6 +373,38 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+    def log_request(self, code="-", size="-"):
+        """one JSON line per request on stderr when the access log is on: method, path WITHOUT the query (the first-load token is in it),
+        status, client address, duration. Never headers, bodies or tokens."""
+        try:
+            _count("requests", str(int(code)))
+        except (TypeError, ValueError):
+            pass
+        if not getattr(self.server, "access_log", False):
+            return
+        import time
+        t0 = getattr(self, "_t0", None)
+        rec = {"ts": round(time.time(), 3), "ip": self._client_ip(), "method": self.command, "path": (self.path or "").split("?")[0][:200],
+               "status": int(code) if str(code).isdigit() else 0, "ms": int((time.monotonic() - t0) * 1000) if t0 else None}
+        sys.stderr.write(json.dumps(rec) + "\n")
+
+    # --- who is calling: the socket address, or (behind N trusted proxies) the Nth entry from the right of X-Forwarded-For ---------------
+    def _client_ip(self) -> str:
+        peer = self.client_address[0]
+        n = getattr(self.server, "trusted_proxies", 0)
+        if n > 0:
+            import ipaddress
+            parts = [x.strip() for x in (self.headers.get("X-Forwarded-For") or "").split(",") if x.strip()]
+            if len(parts) >= n:
+                try:
+                    return str(ipaddress.ip_address(parts[-n]))
+                except ValueError:
+                    pass
+        return peer
+
+    def _is_https(self) -> bool:
+        return getattr(self.server, "trusted_proxies", 0) > 0 and (self.headers.get("X-Forwarded-Proto") or "").split(",")[-1].strip().lower() == "https"
 
     # --- response helpers -------------------------------------------------------------------------
     def _send(self, code, body, ctype="application/json", nonce=None):
@@ -354,6 +419,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
         self.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), clipboard-read=()")
+        if self._is_https():
+            self.send_header("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
         if nonce:
             self.send_header("Content-Security-Policy",
                              f"default-src 'none'; script-src 'self' 'nonce-{nonce}'; style-src 'nonce-{nonce}'; style-src-attr 'unsafe-inline'; "
@@ -375,7 +442,7 @@ class Handler(BaseHTTPRequestHandler):
             self._err(403, "unexpected Host header")
             return False
         origin = self.headers.get("Origin")
-        if origin and _host_only(origin.split("://", 1)[-1]) != host:
+        if origin and _norm_netloc(origin.split("://", 1)[-1]) != _norm_netloc(self.headers.get("Host", "")):       # same host AND port
             self._err(403, "cross-origin request refused")
             return False
         if self.headers.get("Sec-Fetch-Site") not in (None, "same-origin", "none"):
@@ -385,11 +452,15 @@ class Handler(BaseHTTPRequestHandler):
             self._err(415, "Content-Type must be application/json")
             return False
         if srv.token and api:
-            ip = self.client_address[0]
+            ip = self._client_ip()
             if _throttled(ip):
+                with _stats_lock:
+                    _stats["throttled"] += 1
                 self._err(429, "too many failed attempts: wait a minute")
                 return False
             given = self.headers.get("X-Sparqix-Token") or ""
+            if not given and (self.headers.get("Authorization") or "").lower().startswith("bearer "):       # lets Prometheus scrape /metrics
+                given = self.headers["Authorization"][7:].strip()
             if not hmac.compare_digest(given.encode(), srv.token.encode()):
                 _throttled(ip, record=True)
                 self._err(401, "missing or wrong access token")
@@ -397,17 +468,21 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self):
+        import time
+        self._t0 = time.monotonic()
         path, _, query = self.path.partition("?")
         if path in ("/healthz", "/readyz"):          # probes: no Host/token check (kubelet uses the pod IP), no data, no input
             return self._send(200, "ok", "text/plain")
-        if not self._guard(False, api=path.startswith("/api/")):
+        if not self._guard(False, api=path.startswith("/api/") or path == "/metrics"):
             return
+        if path == "/metrics":
+            return self._send(200, _metrics_text(), "text/plain")
         if path in ("/", "/index.html"):
             from urllib.parse import parse_qs
-            if self.server.token and _throttled(self.client_address[0]):
+            if self.server.token and _throttled(self._client_ip()):
                 return self._err(429, "too many failed attempts: wait a minute")
             if self.server.token and not hmac.compare_digest((parse_qs(query).get("token") or [""])[0].encode(), self.server.token.encode()):
-                _throttled(self.client_address[0], record=True)
+                _throttled(self._client_ip(), record=True)
                 return self._err(401, "open the URL printed by `sparqix serve` (it contains the access token)")
             nonce = secrets.token_urlsafe(18)
             page = PAGE.replace("__LANGS__", json.dumps(LANGS)).replace("__DIALECTS__", json.dumps(DIALECTS))
@@ -427,6 +502,8 @@ class Handler(BaseHTTPRequestHandler):
         self._err(404, "not found")
 
     def do_POST(self):
+        import time
+        self._t0 = time.monotonic()
         path = self.path.split("?")[0]
         if not self._guard(True, api=True):
             return
@@ -448,8 +525,11 @@ class Handler(BaseHTTPRequestHandler):
             return self._err(400, f"invalid JSON: {_clip(e, 120)}")
         if not _busy.acquire(blocking=False):
             return self._err(503, "server busy: try again in a moment")
+        with _stats_lock:
+            _stats["in_flight"] += 1
         try:                                       # the slot is held until the response is written, so a SIGTERM drain waits for it
             res = _run_isolated(handlers[path], d, timeout=150 if path == "/api/agent" else None)
+            _count("conversions", "ok" if res[0] == "ok" else "timeout" if res[1] == "Timeout" else "error")
             if res[0] == "ok":
                 return self._send(200, json.dumps(res[1]))
             _, name, msg = res
@@ -462,6 +542,8 @@ class Handler(BaseHTTPRequestHandler):
             sys.stderr.write(f"sparqix: internal error {name}\n")          # type only: no input, no traceback, nothing sensitive
             return self._err(500, f"internal error ({name}); the input could not be converted")
         finally:
+            with _stats_lock:
+                _stats["in_flight"] -= 1
             _busy.release()
 
 
@@ -470,11 +552,15 @@ class _Server(ThreadingHTTPServer):
     request_queue_size = 32
     token = None
     allowed_hosts = frozenset(LOOPBACK)
+    trusted_proxies = 0
+    access_log = False
 
 
-def make_server(host="127.0.0.1", port=8765, token=None, allowed_hosts=()):
+def make_server(host="127.0.0.1", port=8765, token=None, allowed_hosts=(), trusted_proxies=0, access_log=False):
     srv = _Server((host, port), Handler)
     srv.token = token or None
+    srv.trusted_proxies = max(0, min(int(trusted_proxies or 0), 5))
+    srv.access_log = bool(access_log)
     srv.allowed_hosts = frozenset(set(LOOPBACK) | {_host_only(host)} | {_host_only(h) for h in allowed_hosts if h})
     return srv
 
@@ -489,6 +575,11 @@ def main(argv) -> int:
     p.add_argument("--allow-insecure-remote", action="store_true", help="allow a non-local --host without a token (not recommended)")
     p.add_argument("--allowed-host", action="append", default=[],
                    help="extra Host header value to accept (your ingress/service DNS name); repeatable; or SPARQIX_ALLOWED_HOSTS=a,b")
+    p.add_argument("--trusted-proxies", type=int, default=_env_int("SPARQIX_TRUSTED_PROXIES", 0, 0, 5),
+                   help="number of reverse proxies in front of this server (e.g. 1 for one ingress); the client address for the failed-token throttle and the access "
+                        "log is then taken from X-Forwarded-For, and X-Forwarded-Proto: https turns on HSTS. Only set it when the pod accepts traffic from those proxies alone")
+    p.add_argument("--access-log", action="store_true", default=os.environ.get("SPARQIX_ACCESS_LOG") == "1",
+                   help="one JSON line per request on stderr (method, path without query, status, client address, ms); or SPARQIX_ACCESS_LOG=1")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     a = p.parse_args(argv)
     a.allowed_host += [h for h in os.environ.get("SPARQIX_ALLOWED_HOSTS", "").split(",") if h.strip()]
@@ -498,7 +589,7 @@ def main(argv) -> int:
         print("refusing to listen on a non-local address without an access token: use --token auto (and put TLS in front), "
               "or --allow-insecure-remote if you really mean it", file=sys.stderr)
         return 2
-    srv = make_server(a.host, a.port, token, a.allowed_host)
+    srv = make_server(a.host, a.port, token, a.allowed_host, a.trusted_proxies, a.access_log)
     shown = token if (token and a.token == "auto") else None            # a token you supplied is never echoed into logs
     url = f"http://{a.host}:{srv.server_address[1]}/" + (f"?token={shown}" if shown else "")
     if token and not shown:

@@ -48,6 +48,7 @@ that someone may later run on a cluster. The main risks are:
 - Run `scripts/pin_actions.sh` once (needs `gh auth login`) to replace action version tags with commit SHAs; the tags in the repo are not pinned yet because they could not be resolved offline. Also pin the `FROM` images in the `Dockerfile` by digest.
 - The app has no third-party Python dependencies, so the OS layer is the main thing to patch.
 - Rotate the token by updating the Secret and restarting the Deployment.
+- Behind a reverse proxy set `--trusted-proxies N` / `SPARQIX_TRUSTED_PROXIES`: the failed-token throttle then keys on the client address from `X-Forwarded-For` (the Nth entry from the right, which a client cannot forge) and HSTS is sent for https. `--access-log` / `SPARQIX_ACCESS_LOG=1` logs method, path without query, status, client and duration; never tokens or bodies. `/metrics` requires the token.
 - Worker count and memory are set through `SPARQIX_MAX_CONCURRENT` / `SPARQIX_WORKER_MEMORY_MB`; keep the container memory limit above their product plus about 300 MB. The server handles SIGTERM (stops accepting, finishes running conversions for `SPARQIX_DRAIN_SECONDS`).
 
 ## Deploying the GitHub Action safely

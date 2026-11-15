@@ -2999,6 +2999,141 @@ def test_k8s_manifests_match_the_published_image_and_memory_budget():
     assert grace >= 5 + drain + 10
     np = open(os.path.join(k8s, "networkpolicy.yaml")).read()
     assert "port: 443" not in np and os.path.exists(os.path.join(k8s, "networkpolicy-ai-egress.example.yaml"))   # outbound HTTPS is opt-in
+    assert not re.search(r"(?m)^  replicas:", dep)                      # the HPA owns the replica count
+    assert 'name: SPARQIX_TRUSTED_PROXIES, value: "1"' in dep
     ing = open(os.path.join(k8s, "ingress.example.yaml")).read()
     assert "proxy-read-timeout" in ing and "limit-rps" in ing
     assert ver.split(".dev")[0] in open(os.path.join(HERE, "..", "deploy", "k8s", "kustomization.yaml")).read()
+
+
+# ---------------------------------------------------------------- web: proxy-aware throttle, access log, HSTS, metrics, Origin port
+def _web_req(port, method, path, headers=None, body=None):
+    import http.client
+    c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+    h = {"Host": f"127.0.0.1:{port}"}
+    h.update(headers or {})
+    c.request(method, path, body=body, headers=h)
+    r = c.getresponse()
+    return r.status, {k.lower(): v for k, v in r.getheaders()}, r.read()
+
+
+def test_web_throttle_is_per_client_behind_trusted_proxy():
+    import threading
+    from sparqix import web
+    web._fails.clear()
+    srv = web.make_server("127.0.0.1", 0, token="right", trusted_proxies=1)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        for i in range(web.MAX_FAILS + 2):                                    # attacker 203.0.113.9 (the entry the proxy appended)
+            _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": f"bad{i}", "X-Forwarded-For": f"1.1.1.1, 203.0.113.9"})
+        assert _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": "x", "X-Forwarded-For": "203.0.113.9"})[0] == 429
+        # another client is not locked out; a spoofed left-hand entry does not help the attacker
+        assert _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": "right", "X-Forwarded-For": "198.51.100.7"})[0] == 200
+        assert _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": "x", "X-Forwarded-For": "8.8.8.8, 203.0.113.9"})[0] == 429
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+
+
+def test_web_forwarded_headers_ignored_without_trusted_proxy():
+    import threading
+    from sparqix import web
+    web._fails.clear()
+    srv = web.make_server("127.0.0.1", 0, token="right")
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        for i in range(web.MAX_FAILS + 1):                                    # rotating X-Forwarded-For must not dodge the throttle
+            _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": f"bad{i}", "X-Forwarded-For": f"10.0.0.{i}"})
+        assert _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": "x", "X-Forwarded-For": "10.9.9.9"})[0] == 429
+        st, hd, _ = _web_req(port, "GET", "/healthz", {"X-Forwarded-Proto": "https"})
+        assert "strict-transport-security" not in hd
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+
+
+def test_web_hsts_only_behind_trusted_https_proxy():
+    import threading
+    from sparqix import web
+    srv = web.make_server("127.0.0.1", 0, token="t", trusted_proxies=1)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        _, hd, _ = _web_req(port, "GET", "/?token=t", {"X-Forwarded-Proto": "https", "X-Forwarded-For": "1.2.3.4"})
+        assert "max-age" in hd.get("strict-transport-security", "")
+        _, hd, _ = _web_req(port, "GET", "/?token=t", {"X-Forwarded-Proto": "http", "X-Forwarded-For": "1.2.3.4"})
+        assert "strict-transport-security" not in hd
+    finally:
+        srv.shutdown()
+
+
+def test_web_access_log_has_no_token_or_query(capfd):
+    import json as _j
+    import threading
+    from sparqix import web
+    srv = web.make_server("127.0.0.1", 0, token="sekrit-token", access_log=True)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        _web_req(port, "GET", "/?token=sekrit-token")
+        _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": "sekrit-token"})
+        _web_req(port, "GET", "/api/examples", {"X-Sparqix-Token": "wrong"})
+    finally:
+        srv.shutdown()
+    err = capfd.readouterr().err
+    assert "sekrit-token" not in err and "wrong" not in err and "token" not in err.replace('"path"', "")
+    recs = [_j.loads(x) for x in err.splitlines() if x.startswith("{")]
+    assert [r["status"] for r in recs] == [200, 200, 401] and recs[0]["path"] == "/" and recs[0]["method"] == "GET" and recs[0]["ip"] == "127.0.0.1"
+    capfd.readouterr()
+
+
+def test_web_access_log_off_by_default(capfd):
+    import threading
+    from sparqix import web
+    srv = web.make_server("127.0.0.1", 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        _web_req(srv.server_address[1], "GET", "/healthz")
+    finally:
+        srv.shutdown()
+    assert capfd.readouterr().err.strip() == ""
+
+
+def test_web_metrics_need_token_and_expose_only_counters():
+    import json as _j
+    import threading
+    from sparqix import web
+    srv = web.make_server("127.0.0.1", 0, token="t")
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        assert _web_req(port, "GET", "/metrics")[0] == 401
+        body = _j.dumps({"source": "import pandas as pd\ndf = pd.read_csv('a.csv')\n"})
+        assert _web_req(port, "POST", "/api/convert", {"Content-Type": "application/json", "X-Sparqix-Token": "t"}, body)[0] == 200
+        st, hd, b = _web_req(port, "GET", "/metrics", {"Authorization": "Bearer t"})       # Prometheus-style scrape
+        text = b.decode()
+        assert st == 200 and "text/plain" in hd["content-type"]
+        assert 'sparqix_conversions_total{result="ok"} ' in text and "sparqix_http_requests_total{code=" in text
+        assert "sparqix_conversions_in_flight 0" in text and "a.csv" not in text and "pandas" not in text
+    finally:
+        srv.shutdown()
+
+
+def test_web_origin_must_match_host_and_port():
+    import json as _j
+    import threading
+    from sparqix import web
+    srv = web.make_server("127.0.0.1", 0, token="t", allowed_hosts=["app.example.com"])
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    js = {"Content-Type": "application/json", "X-Sparqix-Token": "t"}
+    body = _j.dumps({"source": "x = 1\n", "language": "python"})
+    try:
+        ok = {**js, "Host": "app.example.com", "Origin": "https://app.example.com"}          # default port omitted by the browser
+        assert _web_req(port, "POST", "/api/convert", ok, body)[0] == 200
+        assert _web_req(port, "POST", "/api/convert", {**ok, "Origin": "https://app.example.com:8443"}, body)[0] == 403      # other port
+        assert _web_req(port, "POST", "/api/convert", {**ok, "Origin": "https://evil.example.com"}, body)[0] == 403
+    finally:
+        srv.shutdown()

@@ -30,7 +30,7 @@ Quick local check without ingress: `kubectl -n sparqix port-forward svc/sparqix 
 (port-forwarding keeps the Host header `localhost:8765`, which is always accepted).
 
 ## What the manifests set up
-- Deployment (2 replicas, rolling update, spread across nodes), Service (ClusterIP), PodDisruptionBudget, HPA (CPU 70%, 2-6 pods).
+- Deployment (replica count owned by the HPA, minimum 2; rolling update, spread across nodes), Service (ClusterIP), PodDisruptionBudget, HPA (CPU 70%, 2-6 pods).
 - Pod Security `restricted`, non-root, read-only root filesystem (a small `emptyDir` at `/tmp` for the per-request worker processes), no service-account token.
 - NetworkPolicy: ingress only from the `ingress-nginx` namespace (change the label for your controller); egress only DNS. Outbound HTTPS is **off** by default: apply
   `networkpolicy-ai-egress.example.yaml` as well if you use the AI features.
@@ -38,6 +38,10 @@ Quick local check without ingress: `kubectl -n sparqix port-forward svc/sparqix 
   `MAX_CONCURRENT x WORKER_MEMORY_MB + 300 MB`, otherwise a burst of heavy requests can get the pod OOM-killed.
 - Shutdown: on SIGTERM the app stops accepting connections and lets running conversions finish for up to `SPARQIX_DRAIN_SECONDS` (150); a 5 s `preStop` sleep gives the
   ingress time to drop the pod, and `terminationGracePeriodSeconds` (170) stays above both.
+- Behind one ingress, `SPARQIX_TRUSTED_PROXIES=1` makes the failed-token throttle count per real client (from `X-Forwarded-For`) instead of locking everyone out
+  together, sends HSTS for https requests, and puts the client address in the access log. Never set it when clients can reach the pod directly: they could spoof the header.
+- `SPARQIX_ACCESS_LOG=1` writes one JSON line per request to stderr (time, client, method, path without the query string, status, ms). No tokens, headers or bodies.
+- `GET /metrics` (Prometheus text: request codes, conversion results, in-flight, throttled) needs the token, as `X-Sparqix-Token` or `Authorization: Bearer <token>`.
 - The ingress example sets a 180 s read timeout (the AI assistant can take 150 s) and per-client rate limits.
 - Probes use `/healthz` and `/readyz`, which return `ok` without touching any data or requiring the token.
 - `SPARQIX_ALLOWED_HOSTS` is the DNS-rebinding guard: a request whose Host header is not listed gets 403.
