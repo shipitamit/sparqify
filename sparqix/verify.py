@@ -10,7 +10,7 @@ Which originals can be run (the "original runner" per language):
   R                                                      executed with `Rscript` (must be installed); every data.frame / numeric scalar is compared
 Everything else needs the original tool or a database (SAS, Informatica, Teradata, ...) or a JVM build (Scala/Java): `unverifiable_reason()` says why.
 
-Comparison ignores row order (rows are sorted) and column order, and uses a float tolerance."""
+Comparison ignores row order (rows are sorted) and column order, uses a float tolerance, and treats a date as the timestamp at midnight of that day."""
 from __future__ import annotations
 
 import json
@@ -21,7 +21,15 @@ import tempfile
 
 
 def _norm(df):
-    df = df.rename(columns=str)
+    import datetime
+    import pandas as pd
+    df = df.rename(columns=str).copy()
+    for c in df.columns:
+        # Spark DATE columns arrive as datetime.date objects, pandas parse_dates gives datetime64: same day, so compare them as midnight timestamps
+        if df[c].dtype == object:
+            vals = df[c].dropna()
+            if len(vals) and all(isinstance(v, datetime.date) and not isinstance(v, datetime.datetime) for v in vals):
+                df[c] = pd.to_datetime(df[c])
     df = df[sorted(df.columns)]
     if len(df.columns):
         df = df.sort_values(list(df.columns), na_position="last", kind="mergesort")

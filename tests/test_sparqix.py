@@ -449,6 +449,17 @@ def test_compare_frames():
     assert compare_frames(a, a.assign(v=a.v + 1e-9)) == []
 
 
+def test_compare_frames_treats_date_as_midnight_timestamp():
+    pd = pytest.importorskip("pandas")
+    import datetime
+    from sparqix.verify import compare_frames
+    a = pd.DataFrame({"dt": pd.to_datetime(["2024-04-09", "2024-05-01"]), "v": [1, 2]})
+    b = pd.DataFrame({"dt": [datetime.date(2024, 4, 9), datetime.date(2024, 5, 1)], "v": [1, 2]})
+    assert compare_frames(a, b) == []
+    b2 = pd.DataFrame({"dt": [datetime.date(2024, 4, 9), datetime.date(2024, 5, 2)], "v": [1, 2]})
+    assert compare_frames(a, b2)           # a different day is still a difference
+
+
 def test_verify_end_to_end():
     pytest.importorskip("pyspark")
     import tempfile
