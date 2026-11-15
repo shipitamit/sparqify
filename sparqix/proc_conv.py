@@ -1242,8 +1242,9 @@ def spl_to_plsql(source: str, report: Report) -> str:
                 decls.append(f"{v} {dm2.group(2)}" + (f" := {dm2.group(3)}" if dm2.group(3) else "") + ";")
             return ""
         body = re.sub(r"(?is)\bDECLARE[ \t]+([^;]*);", hoist, body)
+        _sel = re.compile(r"(?i)^SEL\b")      # (a backslash inside an f-string expression is a SyntaxError before Python 3.12)
         body = re.sub(r"(?is)\bFOR[ \t\r\n]+(\w+)[ \t\r\n]+AS[ \t\r\n]+(?:\w+[ \t\r\n]+CURSOR[ \t\r\n]+FOR[ \t\r\n]+)?(.*?)[ \t\r\n]+DO\b",
-                      lambda fm: f"FOR {fm.group(1)} IN ({re.sub(r'(?i)^SEL\b', 'SELECT', fm.group(2).strip())}) LOOP", body)
+                      lambda fm: "FOR %s IN (%s) LOOP" % (fm.group(1), _sel.sub("SELECT", fm.group(2).strip())), body)
         body = re.sub(r"(?i)\bEND[ \t]+FOR\b", "END LOOP", body)
         body = re.sub(r"(?im)^([ \t]*)SET[ \t]+(\w+)[ \t]*=[ \t]*", r"\1\2 := ", body)
         for ab, full in (("SEL", "SELECT"), ("INS", "INSERT"), ("UPD", "UPDATE"), ("DEL", "DELETE")):

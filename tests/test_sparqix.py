@@ -459,6 +459,23 @@ def test_verify_end_to_end():
     assert res["out"] == []
 
 
+def test_verify_compares_lazy_results_before_the_data_folder_is_removed(monkeypatch, tmp_path):
+    """Spark DataFrames read their files when first used. verify() used to delete the temp data folder before materialising them,
+    so every real-Spark comparison failed with PATH_NOT_FOUND (found by the spark-e2e CI job)."""
+    pd = pytest.importorskip("pandas")
+    import sparqix.core as core
+    from sparqix.verify import verify
+    lazy = ("import pandas as pd\n"
+            "class Lazy:\n"
+            "    def __init__(self, path): self.path = path\n"
+            "    def toPandas(self): return pd.read_csv(self.path)\n"
+            "df = Lazy(__import__('os').path.abspath('a.csv'))\n")
+    monkeypatch.setattr(core, "convert", lambda *a, **k: (lazy, core.Report()))
+    (tmp_path / "a.csv").write_text("g,x\na,1\nb,3\n")
+    res, _ = verify("import pandas as pd\ndf = pd.read_csv('a.csv')\n", str(tmp_path))
+    assert res == {"df": []}
+
+
 # ---------------------------------------------------------------- project conversion
 def test_project(tmp_path):
     from sparqix.project import convert_project
@@ -2123,6 +2140,7 @@ def _verify_session(tmp_path, draft_code):
 
 
 def test_verify_draft_reports_mismatch_then_match(tmp_path):
+    pytest.importorskip("pandas")
     from sparqix.agent import call_tool, verification_line
     s = _verify_session(tmp_path, _BAD_DRAFT)
     text, err = call_tool(s, "verify_draft", {"draft": "d1"})
@@ -2135,6 +2153,7 @@ def test_verify_draft_reports_mismatch_then_match(tmp_path):
 
 
 def test_verify_draft_distinguishes_failures_and_has_limits(tmp_path):
+    pytest.importorskip("pandas")
     from sparqix.agent import call_tool, tool_specs, Session
     s = _verify_session(tmp_path, "raise RuntimeError('boom')\n")
     text, err = call_tool(s, "verify_draft", {"draft": "d1"})
@@ -2157,6 +2176,7 @@ def test_verify_draft_distinguishes_failures_and_has_limits(tmp_path):
 
 
 def test_agent_verify_loop_end_to_end_and_report_cannot_overstate(tmp_path):
+    pytest.importorskip("pandas")
     from sparqix.agent import run_agent
 
     def use(i, name, **inp):
@@ -2837,3 +2857,16 @@ def test_project_cli_accepts_every_option_it_reads(tmp_path):
         out = tmp_path / ("out%d" % len(extra))
         main(["project", str(src), "-o", str(out)] + extra)
         assert (out / "a.py").exists()
+
+
+def test_pandas_rank_becomes_window_rank():
+    src = ("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf = df.sort_values(['id'])\n"
+           "df['r1'] = df.groupby('g')['v'].rank(method='first', ascending=False)\n"
+           "df['r2'] = df['v'].rank(method='dense')\n"
+           "df['r3'] = df.groupby('g')['v'].rank(method='min')\n")
+    code, rep = convert(src, "pandas")
+    assert "F.row_number().over(Window.partitionBy('g').orderBy(F.col('v').desc_nulls_last(), F.col('id').asc()))" in code
+    assert "F.dense_rank().over(Window.orderBy(" in code and "F.rank().over(Window.partitionBy('g')" in code
+    assert not rep.todos
+    _, rep = convert("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf['r'] = df.groupby('g')['v'].rank()\n", "pandas")
+    assert rep.todos            # default method='average' has no Spark equivalent

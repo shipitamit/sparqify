@@ -24,7 +24,7 @@ sparqix is a **migration aid, not a guarantee**. Review every converted file bef
 - A match on sample data is evidence, not proof. Use data that covers your edge cases.
 
 ## Main gaps by language
-- **pandas:** `apply(axis=1)`, positional indexing, index semantics, `cumprod`, grouped `rank`, `ewm`, time-based or centered rolling windows.
+- **pandas:** `apply(axis=1)`, positional indexing, index semantics, `cumprod`, `rank` with the default `method='average'` (or `'max'`), `ewm`, time-based or centered rolling windows.
 - **SQL:** `ROWNUM` next to `GROUP BY`/`OR`/`UNION`, `ROWNUM > n`, `NULLS FIRST/LAST` in some aggregates, ClickHouse `LIMIT n BY`, Informix/Firebird `SKIP`.
 - **SQL dialects:** 19 of the 40 are aliases that reuse another dialect's rules (MariaDB uses MySQL, Greenplum uses PostgreSQL, and so on). Dialect-specific features may be missed; a note in the report says which family was used.
 - **R:** selection helpers such as `starts_with`, `-col` and `a:c`; several `names_from` columns in `pivot_wider`.

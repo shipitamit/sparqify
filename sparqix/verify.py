@@ -58,7 +58,7 @@ def compare_frames(a, b, rtol: float = 1e-6):
     return diffs
 
 
-def _as_pandas(v):
+def _as_pandas(v, errors=None):
     """pandas object / number for any DataFrame-like value (pandas, polars, dask, pyspark, pyspark.pandas), else None"""
     import pandas as pd
     if isinstance(v, bool):
@@ -76,7 +76,9 @@ def _as_pandas(v):
             return r if isinstance(r, (pd.DataFrame, pd.Series, int, float)) else None
         if hasattr(v, "to_pandas"):
             return v.to_pandas()
-    except Exception:
+    except Exception as e:
+        if errors is not None:
+            errors.append(f"{type(e).__name__}: {str(e).strip().splitlines()[0][:300] if str(e).strip() else ''}")
         return None
     return None
 
@@ -311,14 +313,16 @@ def verify(source: str, data_dir: str = ".", variables=None, rtol: float = 1e-6,
             shutil.copytree(data_dir, t, dirs_exist_ok=True)
         orig = _original_ns(language, source, t1)
         new = _converted_ns(language, converted, t2)
-    for n in variables or _default_names(orig):
-        if n not in orig:
-            results[n] = ["variable not present in the original"]
-        elif n not in new:
-            results[n] = ["variable not present in converted code"]
-        else:
-            b = _as_pandas(new[n])
-            results[n] = ["could not turn the converted value into a table"] if b is None else _compare_values(n, orig[n], b, rtol)
+        # Spark DataFrames are lazy: they read the CSVs when first used, so the comparison must happen while the data folders still exist
+        for n in variables or _default_names(orig):
+            if n not in orig:
+                results[n] = ["variable not present in the original"]
+            elif n not in new:
+                results[n] = ["variable not present in converted code"]
+            else:
+                errs = []
+                b = _as_pandas(new[n], errs)
+                results[n] = [("could not turn the converted value into a table" + (f": {errs[0]}" if errs else ""))] if b is None else _compare_values(n, orig[n], b, rtol)
     if language == "sql" and len([k for k in orig if k.startswith("query_")]) != len([k for k in new if k.startswith("query_")]):
         results["statements"] = ["the original and the converted SQL have a different number of SELECT statements"]
     return results, report
@@ -351,8 +355,9 @@ else:
                 out["results"][n] = ["variable not present in converted code"]
             else:
                 try:
-                    b = _as_pandas(new[n])
-                    out["results"][n] = ["could not turn the converted value into a table"] if b is None else [str(x)[:300] for x in _compare_values(n, orig[n], b, RTOL)[:5]]
+                    errs = []
+                    b = _as_pandas(new[n], errs)
+                    out["results"][n] = ["could not turn the converted value into a table" + (": " + errs[0] if errs else "")] if b is None else [str(x)[:300] for x in _compare_values(n, orig[n], b, RTOL)[:5]]
                 except Exception as e:
                     out["results"][n] = ["could not compare: " + type(e).__name__ + ": " + str(e)[:200]]
         if LANGUAGE == "sql" and len([k for k in orig if k.startswith("query_")]) != len([k for k in new if k.startswith("query_")]):

@@ -72,7 +72,7 @@ Short version: [docs/limits.md](docs/limits.md). Details below.
 * Not every construct can be translated mechanically. `apply(axis=1)`, positional indexing and index semantics are flagged as TODO.
 * pandas: `shift`/`diff`/`pct_change`/`cumsum`/`cummax`/`cummin`/`rolling(n)`/`expanding()` (also per `groupby` and in `groupby().transform(lambda ...)`) become `Window` functions,
   ordered by the last `sort_values` (otherwise by current row order, with a warning). `iterrows`/`itertuples` loops that only *read* rows become a driver-side
-  `toLocalIterator()` loop (slow, not distributed); loops that write back into the DataFrame stay TODO. Still TODO: `cumprod`, `rank`, `ewm`, time-based or centered rolling windows, `rolling().median()/count()`.
+  `toLocalIterator()` loop (slow, not distributed); loops that write back into the DataFrame stay TODO. `rank(method='min'|'dense'|'first', ascending=...)` (also per `groupby`) becomes `rank`/`dense_rank`/`row_number` over a window (nulls stay null, result is a double like pandas). Still TODO: `rank()` with the default `method='average'` or `'max'`, `cumprod`, `ewm`, time-based or centered rolling windows, `rolling().median()/count()`.
 * SQL: Oracle `ROWNUM <= n` / `< n` / `= 1` (at any query level, also next to other WHERE conditions) becomes `LIMIT`; a `ROWNUM` in the select list becomes
   `row_number() OVER (ORDER BY monotonically_increasing_id())` (pagination with `ROWNUM rn ... WHERE ROWNUM <= n` keeps its meaning through a filter on the alias).
   Still TODO: ROWNUM next to GROUP BY / DISTINCT / aggregates / OR / UNION at the same level, `ROWNUM > n`, `ROWNUM = n` for n > 1. BigQuery `ARRAY_AGG` with `DISTINCT`, `IGNORE NULLS`,

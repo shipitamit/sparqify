@@ -25,7 +25,7 @@ jobs:
       - name: Build image (not pushed)
         run: docker build -t sparqix:ci .
       - name: Scan image (fails on HIGH/CRITICAL with a fix available)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: sparqix:ci
           severity: HIGH,CRITICAL
