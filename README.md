@@ -9,8 +9,10 @@ Zero dependencies (stdlib only). Output always parses; anything it cannot transl
 ## Install
 
 ```bash
-pip install .                 # or run in place: python -m sparqix ...
-sparqix --help                # Python 3.9+
+pip install sparqix           # from PyPI (Python 3.9+)
+sparqix --help
+
+pip install .                 # from a checkout, or run in place: python -m sparqix ...
 ```
 
 ## At a glance
@@ -67,7 +69,7 @@ Library: `from sparqix import convert; code, report = convert(src, "auto")`
 | Python | PySpark RDD | list/dict comprehensions, map/filter/sorted/set, sum/len/min/max/any/all/Counter, accumulate / count / append loops, nested loops (flatMap), open()/csv.DictReader sources |
 
 ## Honest limits
-Short version: [docs/limits.md](docs/limits.md). Details below.
+Short version: [docs/limits.md](https://github.com/shipitamit/sparqix/blob/main/docs/limits.md). Details below.
 
 * Not every construct can be translated mechanically. `apply(axis=1)`, positional indexing and index semantics are flagged as TODO.
 * pandas: `shift`/`diff`/`pct_change`/`cumsum`/`cummax`/`cummin`/`rolling(n)`/`expanding()` (also per `groupby` and in `groupby().transform(lambda ...)`) become `Window` functions,

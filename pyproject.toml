@@ -6,8 +6,29 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 keywords = ["spark", "pyspark", "migration", "etl", "teradata", "sql", "converter"]
+authors = [{name = "shipitamit"}]
 requires-python = ">=3.9"
 dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Database",
+    "Topic :: Software Development :: Code Generators",
+]
+
+[project.urls]
+Homepage = "https://github.com/shipitamit/sparqix"
+Source = "https://github.com/shipitamit/sparqix"
+Issues = "https://github.com/shipitamit/sparqix/issues"
+Documentation = "https://github.com/shipitamit/sparqix/blob/main/docs/limits.md"
 
 [project.scripts]
 sparqix = "sparqix.cli:main"
