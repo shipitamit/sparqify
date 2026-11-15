@@ -177,3 +177,113 @@ def test_ssis_data_flow_matches_expected(tmp_path):
     _eq(other[["order_id", "customer_id", "region", "amount", "qty", "total", "tier", "label"]], got[["order_id", "customer_id", "region", "amount", "qty", "total", "tier", "label"]], "orders_eu.csv")
     assert "weird" in got.columns and got["weird"].isna().all()           # the untranslatable TOKEN() column is an empty string column, and the file could be written
     assert any("FuzzyLookup" in str(t_) for t_ in rep.todos) and any("TOKEN" in str(t_) for t_ in rep.todos)
+
+
+# ------------------------------------------------------------------------------------------------ stored procedures (T-SQL, Oracle PL/SQL, Teradata SPL)
+# The converted procedures are Python functions that call spark.sql(...). Open-source Spark cannot run DELETE / UPDATE / MERGE on plain tables
+# (that needs Delta), so those three are parsed by Spark's own SQL parser (a syntax check) and recorded; everything else (SELECT, INSERT,
+# temp views, control flow, parameters, OUT values) really runs against parquet tables.
+class _ProcSpark:
+    def __init__(self, real):
+        self._real, self.log = real, []
+
+    def sql(self, q, args=None, **kw):
+        flat = " ".join(q.split())
+        if flat.split(" ", 1)[0].upper() in ("DELETE", "UPDATE", "MERGE"):
+            try:
+                self._real._jsparkSession.sessionState().sqlParser().parsePlan(q)           # Spark's parser: raises ParseException on invalid syntax
+            except AttributeError:                                                          # no py4j access to the parser on this Spark build: record only
+                pass
+            self.log.append((flat.split(" ", 1)[0].upper(), flat, dict(args or {})))
+            return self._real.range(0)
+        return self._real.sql(q, args=args, **kw) if args else self._real.sql(q, **kw)
+
+    def __getattr__(self, item):
+        return getattr(self._real, item)
+
+
+@pytest.fixture
+def proc_env(tmp_path):
+    sp = _spark()
+    made = []
+
+    def table(name, ddl, rows=()):
+        path = os.path.join(str(tmp_path), name)
+        sp.sql(f"DROP TABLE IF EXISTS {name}")
+        sp.sql(f"CREATE TABLE {name} ({ddl}) USING parquet LOCATION '{path}'")
+        made.append(name)
+        if rows:
+            sp.createDataFrame(list(rows), ddl).write.mode("append").insertInto(name)
+        return name
+
+    yield sp, table, _ProcSpark(sp)
+    for n in made:
+        sp.sql(f"DROP TABLE IF EXISTS {n}")
+
+
+def _proc(example, fn):
+    p = os.path.join(EX, example)
+    code, rep = convert(open(p).read(), "auto", filename=p)
+    ns = {"__name__": "converted"}
+    exec(compile(code, example, "exec"), ns)
+    return ns[fn], rep
+
+
+def test_tsql_procedure_matches_expected(proc_env, capsys):
+    import datetime
+    sp, table, ps = proc_env
+    d = datetime.date
+    table("customers", "id int, region string", [(1, "north"), (2, "south")])
+    table("stg_orders", "order_id int, amount double, customer_id int, order_date date",
+          [(1, 150.0, 1, d(2024, 3, 1)), (2, 50.0, 1, d(2024, 3, 1)), (3, 300.0, 9, d(2024, 3, 1)), (4, 120.0, 2, d(2024, 3, 1)),
+           (5, 500.0, 1, d(2024, 3, 2)), (6, 175.0, 2, d(2024, 3, 1))])
+    table("fact_orders", "order_id int, amount double, region string, order_date date")
+    usp, rep = _proc("usp_load_orders.sql", "usp_load_orders")
+    assert not rep.todos
+
+    out = usp(ps, d(2024, 3, 1))                                           # min_amount defaults to 100
+    got = sp.table("fact_orders").toPandas()
+    exp = pd.DataFrame([(1, 150.0, "north"), (3, 300.0, "n/a"), (4, 120.0, "south"), (6, 175.0, "south")], columns=["order_id", "amount", "region"])
+    exp["order_date"] = d(2024, 3, 1)
+    _eq(exp, got, "fact_orders")                                           # amount >= 100 only, the missing customer gets 'n/a', other dates untouched
+    assert out == {"rows": 3}                                              # 5 orders that day, the WHILE loop counts down to 3
+    assert [x[0] for x in ps.log] == ["DELETE"] and ps.log[0][2] == {"run_date": d(2024, 3, 1)}
+    assert "negative amounts found" not in capsys.readouterr().out
+
+    ps.log.clear()
+    assert usp(ps, d(2024, 4, 1)) == {"rows": 0}                           # nothing staged for that day: early RETURN before any DML
+    assert "nothing to load" in capsys.readouterr().out and ps.log == []
+
+
+def test_oracle_procedure_matches_expected(proc_env, capsys):
+    sp, table, ps = proc_env
+    table("sales", "region string, amount double", [("EU", 10.0), ("EU", 20.0), ("EU", 5.0), ("US", 1.0)])
+    table("region_totals", "region string, amount double", [("EU", 150.0), ("US", 50.0), ("ASIA", 300.0)])
+    refresh, rep = _proc("p_refresh.plsql", "refresh_totals")
+    assert not rep.todos
+
+    out = refresh(ps, "EU", p_days=2)
+    assert out == {"p_out": 3}                                             # v_n = 3 sales rows, below 1000: v_total = v_n
+    ups = [x for x in ps.log if x[0] == "UPDATE"]
+    assert [(x[2]["i"], x[2]["v_total"], x[2]["p_region"]) for x in ups] == [(1, 3, "EU"), (2, 3, "EU")]      # FOR i IN 1..p_days
+    assert sum(1 for x in ps.log if x[0] == "MERGE") == 1
+    assert sorted(capsys.readouterr().out.split()) == ["ASIA", "EU"]       # the cursor loop prints the regions with amount > 100
+
+    ps.log.clear()
+    assert refresh(ps, "NONE") == {"p_out": None}
+    assert "no sales" in capsys.readouterr().out and ps.log == []
+
+
+@pytest.mark.parametrize("p_min,expect_dml,expect_rows", [(4, "UPDATE", 6), (6, "DELETE", 6), (1, None, 9)])
+def test_teradata_procedure_matches_expected(proc_env, p_min, expect_dml, expect_rows):
+    sp, table, ps = proc_env
+    table("src", "region string, amt int", [("EU", 5), ("EU", 50), ("EU", 20), ("US", 100)])
+    table("tgt", "region string, amt int")
+    load, rep = _proc("load_sales.spl", "load_sales")
+    assert not rep.todos
+    out = load(ps, "EU", p_min, None)
+    v_total = p_min * 2
+    n = sum(1 for amt in (5, 50, 20) if amt > v_total)
+    assert sp.table("tgt").count() == 3 * n == expect_rows                 # the WHILE loop inserts three times
+    assert out == {"p_cnt": expect_rows}                                   # SELECT COUNT(*) INTO p_cnt
+    assert [x[0] for x in ps.log] == ([expect_dml] if expect_dml else [])  # >10 deletes, >5 updates, else v_total = 0 (no statement)
