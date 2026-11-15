@@ -19,31 +19,35 @@ jobs:
       contents: read
     steps:
       # Run scripts/pin_actions.sh once to replace these version tags with full commit SHAs.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with: {persist-credentials: false}
       - name: Build image (not pushed)
         run: docker build -t sparqix:ci .
-      - name: Show HIGH/CRITICAL findings with a fix available (log only)
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: sparqix:ci
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "0"
-          format: table
       - name: Scan image (fails on HIGH/CRITICAL with a fix available)
+        # the findings table is printed in THIS step's log, so a failure explains itself
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: sparqix:ci
           severity: HIGH,CRITICAL
           ignore-unfixed: true
-          limit-severities-for-sarif: true     # without this, SARIF output ignores `severity` and the gate fails on every finding
           exit-code: "1"
+          format: table
+          skip-version-check: true
+      - name: Write the scan report (never fails; kept as an artifact)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: sparqix:ci
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          limit-severities-for-sarif: true
+          exit-code: "0"
           format: sarif
           output: trivy.sarif
+          skip-version-check: true
       - name: Keep the scan report as a build artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with: {name: trivy-sarif, path: trivy.sarif, if-no-files-found: ignore}
       - name: Image runs as non-root and serves probes
         run: |
@@ -65,7 +69,7 @@ jobs:
       packages: write
       id-token: write           # keyless signing
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with: {persist-credentials: false}
       - uses: docker/login-action@v3
         with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
