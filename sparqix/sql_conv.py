@@ -672,10 +672,25 @@ class Rewriter:
             if re.search(r"(?i)\bORDER\s+BY\b", args[0]):
                 c.warn("GROUP_CONCAT ... ORDER BY dropped: collect_list order is not guaranteed")
                 args = [re.split(r"(?i)\s+ORDER\s+BY\s+", args[0])[0]] + args[1:]
+        inline_order = None                      # BigQuery / Postgres: STRING_AGG(x, ',' ORDER BY k [DESC])
+        if up == "STRING_AGG":
+            m = re.search(r"(?is)^(.*?)\s+ORDER\s+BY\s+(.+?)(?:\s+(ASC|DESC))?\s*$", args[-1])
+            if m and m.group(1).strip():
+                args = args[:-1] + [m.group(1)]
+                inline_order = (m.group(2).strip(), (m.group(3) or "").upper() == "DESC")
         if len(args) > 1:
             sep = args[1]
         col = args[0]
         agg = "collect_set" if distinct else "collect_list"
+        if inline_order:
+            key, desc = inline_order
+            if key.lower() == col.strip().lower():
+                return f"array_join(sort_array({agg}({col}){', false' if desc else ''}), {sep})", end
+            if distinct:
+                c.warn("STRING_AGG(DISTINCT x ORDER BY other) -> order by another column not supported with DISTINCT: order is not guaranteed")
+                return f"array_join({agg}({col}), {sep})", end
+            # order by another column: sort structs by the key, then take the value (NULL values are dropped, like STRING_AGG)
+            return (f"array_join(transform(sort_array(collect_list(struct({key} AS _k, {col} AS _v)){', false' if desc else ''}), _e -> _e._v), {sep})"), end
         # swallow WITHIN GROUP (...)
         k = end + 1
         while k < len(toks) and toks[k][0] == "ws":

@@ -1,6 +1,6 @@
 """End-to-end check on REAL Spark: run each original script in tests/e2e/cases and its converted PySpark code on the same data, diff the results.
 Skipped unless pyspark is installed (the `spark-e2e` CI job installs it). Add a case by dropping a script into tests/e2e/cases/;
-SQL cases may carry a dialect in the name: `name.<dialect>.sql`; Polars / Dask cases are `name.polars.py` / `name.dask.py`."""
+SQL cases may carry a dialect in the name: `name.<dialect>.sql`; a dialect DuckDB cannot run (Teradata, BigQuery, Databricks) gets a hand-written DuckDB equivalent `name.<dialect>.oracle.sql` as the reference; Polars / Dask cases are `name.polars.py` / `name.dask.py`."""
 import glob
 import os
 
@@ -11,7 +11,7 @@ from sparqix import verify as V  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "e2e", "data")
-CASES = sorted(glob.glob(os.path.join(HERE, "e2e", "cases", "*")))
+CASES = sorted(c for c in glob.glob(os.path.join(HERE, "e2e", "cases", "*")) if not c.endswith(".oracle.sql"))
 _LANG = {".py": "pandas", ".sql": "sql", ".R": "r"}
 
 
@@ -46,7 +46,9 @@ def test_converted_matches_original(path):
         pytest.importorskip(lang)
     parts = os.path.basename(path).split(".")
     dialect = parts[-2] if lang == "sql" and len(parts) > 2 else "generic"
-    results, report = V.verify(open(path).read(), DATA, language=lang, dialect=dialect)
+    oracle = path[:-len(".sql")] + ".oracle.sql" if lang == "sql" else ""
+    results, report = V.verify(open(path).read(), DATA, language=lang, dialect=dialect,
+                               original=open(oracle).read() if oracle and os.path.exists(oracle) else None)
     assert results, "nothing was compared"
     bad = {k: v for k, v in results.items() if v}
     assert not bad, bad
