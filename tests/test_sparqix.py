@@ -2825,3 +2825,15 @@ def test_new_dialects_hostile_input_is_fast():
             except Exception as e:
                 assert type(e).__name__ in ("ConvertError", "InputRejected", "Unsupported"), e
             assert time.time() - t < 5, (d, q[:30])
+
+
+def test_project_cli_accepts_every_option_it_reads(tmp_path):
+    """`sparqix project` read --ai-provider / --ai-base-url without defining them, so the GitHub Action crashed with AttributeError."""
+    from sparqix.cli import main
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.py").write_text("import pandas as pd\ndf = pd.read_csv('a.csv')\n")
+    for extra in ([], ["--ai-provider", "ollama", "--ai-base-url", "http://localhost:11434/v1"]):
+        out = tmp_path / ("out%d" % len(extra))
+        main(["project", str(src), "-o", str(out)] + extra)
+        assert (out / "a.py").exists()

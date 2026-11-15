@@ -1,8 +1,0 @@
-Initial commit: sparqix, a stdlib-only converter to Apache Spark
-
-Converts pandas, Polars, Dask, R, SAS, notebooks, dbt, Excel, Scala/Java,
-plain Python, 40 SQL dialects, stored procedures and ETL tools (Informatica,
-Talend, Teradata BTEQ/TPT, ...) to PySpark or Spark SQL.
-
-Code it cannot translate safely is left as TODO comments. Includes a
-verify loop, tests and a real-Spark CI job.

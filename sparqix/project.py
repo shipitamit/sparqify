@@ -168,6 +168,8 @@ def main(argv) -> int:
     p.add_argument("--ai", action="store_true", help="model-assisted suggestions for TODO blocks (sends snippets to the provider you choose)")
     p.add_argument("--ai-apply", action="store_true")
     p.add_argument("--ai-model", default=None)
+    p.add_argument("--ai-provider", default=None, help="anthropic, openai, gemini, mistral, groq, together, openrouter, ollama or custom; default: env SPARQIX_AI_PROVIDER")
+    p.add_argument("--ai-base-url", default=None, help="API base URL for an OpenAI-compatible server; env SPARQIX_AI_BASE_URL")
     p.add_argument("--ai-max", type=int, default=20, help="maximum TODO blocks sent per file")
     p.add_argument("--strict", action="store_true", help="exit 2 if any file has TODOs or failed")
     a = p.parse_args(argv)

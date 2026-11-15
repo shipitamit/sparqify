@@ -2,3 +2,4 @@ __pycache__/
 .pytest_cache/
 sparqix-out/
 *.egg-info/
+.DS_Store
