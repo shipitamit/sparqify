@@ -780,7 +780,7 @@ class Translator:
             return V("col", f"F.{fn}({gb.sel[0]!r}).over(Window.partitionBy({keys}))", df=gb.df)
         if name == "nunique":
             return build([f"F.countDistinct({c!r}).alias({c!r})" for c in (gb.sel or [])])
-        if name in ("cumsum", "cummax", "cummin", "shift", "diff", "pct_change", "cumcount", "rolling", "expanding", "rank"):
+        if name in ("cumsum", "cumprod", "cummax", "cummin", "shift", "diff", "pct_change", "cumcount", "rolling", "expanding", "rank"):
             if name != "cumcount" and not (gb.sel and len(gb.sel) == 1):
                 raise Unsupported(f"groupby().{name}() needs exactly one selected column, e.g. df.groupby('k')['v'].{name}()")
             col = f"F.col({gb.sel[0]!r})" if gb.sel else "F.lit(1)"
@@ -905,9 +905,9 @@ class Translator:
         if name in ("tolist", "to_list"):
             self.warn("collect() pulls all data to the driver - only safe for small results")
             return V("py", f"[r[0] for r in {df}.select({c}).collect()]")
-        if name in ("shift", "cumsum", "cummax", "cummin", "diff", "pct_change", "rolling", "expanding", "rank"):
+        if name in ("shift", "cumsum", "cumprod", "cummax", "cummin", "diff", "pct_change", "rolling", "expanding", "rank"):
             return self.seq_method(s, name, n)
-        if name in ("cumprod", "ewm", "idxmax", "idxmin", "sort_values", "mode", "quantile"):
+        if name in ("ewm", "idxmax", "idxmin", "sort_values", "mode", "quantile"):
             raise Unsupported(f"Series.{name}() needs an explicit Window (ordering is not implicit in Spark)")
         raise Unsupported(f"Series.{name}() has no automatic conversion")
 
@@ -944,7 +944,7 @@ class Translator:
         a, kw = self.args(n)
         c = s.code
         bad = set(kw) - {"shift": {"periods", "fill_value"}, "diff": {"periods"}, "pct_change": {"periods"},
-                         "cumsum": {"skipna"}, "cummax": {"skipna"}, "cummin": {"skipna"}, "cumcount": set(),
+                         "cumsum": {"skipna"}, "cumprod": {"skipna"}, "cummax": {"skipna"}, "cummin": {"skipna"}, "cumcount": set(),
                          "rolling": {"window", "min_periods"}, "expanding": {"min_periods"},
                          "rank": {"method", "ascending", "na_option"}}[name]
         if bad:
@@ -977,9 +977,9 @@ class Translator:
             if name == "diff":
                 return col(f"({c} - {shifted})")
             return col(f"({c} / {shifted} - 1)")
-        if name in ("cumsum", "cummax", "cummin"):
+        if name in ("cumsum", "cumprod", "cummax", "cummin"):
             w = self.window(s, ("Window.unboundedPreceding", "Window.currentRow"))
-            fn = {"cumsum": "sum", "cummax": "max", "cummin": "min"}[name]
+            fn = {"cumsum": "sum", "cumprod": "product", "cummax": "max", "cummin": "min"}[name]       # F.product: Spark 3.2+
             return col(f"F.when({c}.isNotNull(), F.{fn}({c}).over({w}))")        # pandas keeps NaN where the input is NaN
         if name == "cumcount":
             w = self.window(s)
@@ -990,8 +990,8 @@ class Translator:
             method = _lit(kw["method"]) if "method" in kw else "average"
             asc = _lit(kw["ascending"]) if "ascending" in kw else True
             na = _lit(kw["na_option"]) if "na_option" in kw else "keep"
-            if method not in ("min", "dense", "first") or not isinstance(asc, bool) or na != "keep":
-                raise Unsupported("rank() converts only with method='min', 'dense' or 'first' (the default 'average' and 'max' have no Spark rank function), a literal ascending and na_option='keep'")
+            if method not in ("average", "min", "max", "dense", "first") or not isinstance(asc, bool) or na != "keep":
+                raise Unsupported("rank() converts only with method='average', 'min', 'max', 'dense' or 'first', a literal ascending and na_option='keep'")
             self.uses_window = True
             o = f"{c}.{'asc' if asc else 'desc'}_nulls_last()"
             if method == "first":
@@ -1003,8 +1003,14 @@ class Translator:
             if not s.part and not self.warned_part:
                 self.warned_part = True
                 self.warn("window without groupby/partition: Spark moves all rows to a single partition (slow on big data)")
-            fn = {"min": "rank", "dense": "dense_rank", "first": "row_number"}[method]
-            return col(f"F.when({c}.isNotNull(), F.{fn}().over({w}).cast('double'))")      # pandas ranks are floats and keep NaN as NaN
+            if method in ("average", "max"):
+                # rank() is the lowest rank of a tie group; add the group size: max = min + n - 1, average = min + (n - 1) / 2
+                tw = f"Window.partitionBy({', '.join(list(s.part or []) + [c])})"
+                n_ties = f"(F.count(F.lit(1)).over({tw}) - 1)"
+                expr = f"(F.rank().over({w}) + {n_ties}{' / 2' if method == 'average' else ''})"
+            else:
+                expr = f"F.{ {'min': 'rank', 'dense': 'dense_rank', 'first': 'row_number'}[method] }().over({w})"
+            return col(f"F.when({c}.isNotNull(), {expr}.cast('double'))")      # pandas ranks are floats and keep NaN as NaN
         # rolling / expanding -> intermediate object
         mp = _lit(kw["min_periods"]) if "min_periods" in kw else None
         if mp is not None and (isinstance(mp, bool) or not isinstance(mp, int) or mp < 0):

@@ -15,7 +15,7 @@ sparqix is a **migration aid, not a guarantee**. Review every converted file bef
 | Java output | Type-checked with `javac` against hand-written Spark API stubs, not real Spark jars |
 | Scala output | Never compiled |
 | SQL dialects | Checked on hand-written examples, not against real database engines |
-| Teradata, SAS, ETL tools | Best effort; the original tools were not available to compare against |
+| Teradata, SAS, ETL tools | Best effort; the original tools were not available to compare against. The Pentaho and Pig conversions run on real Spark against hand-computed results (`tests/test_e2e_etl.py`); the other ETL tools and stored procedures do not yet |
 
 ## Verify loop (`sparqix verify`)
 - Can run the original for pandas, Polars, Dask, notebooks, SQL (DuckDB or SQLite) and R.
@@ -24,7 +24,7 @@ sparqix is a **migration aid, not a guarantee**. Review every converted file bef
 - A match on sample data is evidence, not proof. Use data that covers your edge cases.
 
 ## Main gaps by language
-- **pandas:** `apply(axis=1)`, positional indexing, index semantics, `cumprod`, `rank` with the default `method='average'` (or `'max'`), `ewm`, time-based or centered rolling windows.
+- **pandas:** `apply(axis=1)`, positional indexing, index semantics, `ewm`, time-based or centered rolling windows.
 - **SQL:** `ROWNUM` next to `GROUP BY`/`OR`/`UNION`, `ROWNUM > n`, `NULLS FIRST/LAST` in some aggregates, ClickHouse `LIMIT n BY`, Informix/Firebird `SKIP`.
 - **SQL dialects:** 19 of the 40 are aliases that reuse another dialect's rules (MariaDB uses MySQL, Greenplum uses PostgreSQL, and so on). Dialect-specific features may be missed; a note in the report says which family was used.
 - **R:** selection helpers such as `starts_with`, `-col` and `a:c`; several `names_from` columns in `pivot_wider`.

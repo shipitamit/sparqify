@@ -2592,7 +2592,7 @@ def test_pandas_groupby_window_methods_and_transform_lambda():
 
 
 def test_pandas_window_methods_unsupported_forms_are_todos():
-    for bad in ("df['x'] = df['v'].cumprod()", "df['x'] = df['v'].rolling('7D').sum()", "df['x'] = df['v'].rolling(3, center=True).sum()",
+    for bad in ("df['x'] = df['v'].cumprod(skipna=False)", "df['x'] = df['v'].rank(method='bogus')", "df['x'] = df['v'].rolling('7D').sum()", "df['x'] = df['v'].rolling(3, center=True).sum()",
                 "df['x'] = df['v'].rolling(3).median()", "df['x'] = df['v'].shift(freq='D')", "df['x'] = df['v'].diff(0)",
                 "df['x'] = df['v'].cumsum(skipna=False)", "df['x'] = df.groupby('k')[['v', 'w']].cumsum()", "df['x'] = df['v'].rolling(n).sum()"):
         code, rep = pyc("df = pd.read_csv('a.csv')\n" + bad + "\n")
@@ -2884,8 +2884,19 @@ def test_pandas_rank_becomes_window_rank():
     assert "F.row_number().over(Window.partitionBy('g').orderBy(F.col('v').desc_nulls_last(), F.col('id').asc()))" in code
     assert "F.dense_rank().over(Window.orderBy(" in code and "F.rank().over(Window.partitionBy('g')" in code
     assert not rep.todos
-    _, rep = convert("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf['r'] = df.groupby('g')['v'].rank()\n", "pandas")
-    assert rep.todos            # default method='average' has no Spark equivalent
+
+
+def test_pandas_rank_average_max_and_cumprod():
+    src = ("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf = df.sort_values(['id'])\n"
+           "df['avg'] = df.groupby('g')['v'].rank()\n"
+           "df['mx'] = df.groupby('g')['v'].rank(method='max', ascending=False)\n"
+           "df['cp'] = df.groupby('g')['v'].cumprod()\n")
+    code, rep = convert(src, "pandas")
+    assert not rep.todos
+    # average = lowest rank + (ties - 1) / 2; max = lowest rank + ties - 1; ties counted per group AND value
+    assert "(F.rank().over(Window.partitionBy('g').orderBy(F.col('v').asc_nulls_last())) + (F.count(F.lit(1)).over(Window.partitionBy('g', F.col('v'))) - 1) / 2)" in code
+    assert "desc_nulls_last())) + (F.count(F.lit(1)).over(Window.partitionBy('g', F.col('v'))) - 1))" in code
+    assert "F.product(F.col('v')).over(Window.partitionBy('g')" in code and "rowsBetween(Window.unboundedPreceding, Window.currentRow)" in code
 
 
 def test_converted_run_makes_relative_spark_paths_absolute(tmp_path, monkeypatch):
