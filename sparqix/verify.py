@@ -20,11 +20,23 @@ import shutil
 import tempfile
 
 
+def _isnum(v):
+    """a real number for comparison purposes: int, float, numpy numbers and decimal.Decimal (Spark returns DECIMAL columns as Decimal); never bool"""
+    import decimal
+    import numbers
+    return isinstance(v, (numbers.Real, decimal.Decimal)) and not isinstance(v, bool)
+
+
 def _norm(df):
     import datetime
+    import decimal
     import pandas as pd
     df = df.rename(columns=str).copy()
     for c in df.columns:
+        if df[c].dtype == object:                  # a DECIMAL column (Python Decimal objects): compare it as numbers, like the float the other side holds
+            vals = df[c].dropna()
+            if len(vals) and all(isinstance(v, decimal.Decimal) for v in vals):
+                df[c] = pd.to_numeric(df[c].map(lambda v: float(v) if isinstance(v, decimal.Decimal) else v))
         # Spark DATE columns arrive as datetime.date objects, pandas parse_dates gives datetime64: same day, so compare them as midnight timestamps
         if df[c].dtype == object:
             vals = df[c].dropna()
@@ -67,7 +79,7 @@ def compare_frames(a, b, rtol: float = 1e-6):
         for u, v in zip(x, y):
             if (pd.isna(u) and pd.isna(v)):
                 continue
-            if isinstance(u, (int, float)) and isinstance(v, (int, float)) and not isinstance(u, bool):
+            if _isnum(u) and _isnum(v):
                 if not math.isclose(float(u), float(v), rel_tol=rtol, abs_tol=rtol):
                     bad += 1
             elif str(u) != str(v):
@@ -347,8 +359,9 @@ class NotVerifiable(Exception):
 
 
 def verify(source: str, data_dir: str = ".", variables=None, rtol: float = 1e-6, language: str = "pandas", mode: str = "dataframe", target: str = "spark",
-           dialect: str = "generic"):
-    """Returns ({variable: [differences]}, report); raises ImportError if pyspark/pandas are missing and NotVerifiable for languages with no original runner."""
+           dialect: str = "generic", original: str = None):
+    """`original`: for SQL in a dialect the local engine (DuckDB) cannot run, a hand-written DuckDB-runnable equivalent to use as the reference result
+    (the `source` is still the text that gets converted). Returns ({variable: [differences]}, report); raises ImportError if pyspark/pandas are missing and NotVerifiable for languages with no original runner."""
     why = unverifiable_reason(language)
     if why:
         raise NotVerifiable(f"{language}: {why}")
@@ -362,7 +375,7 @@ def verify(source: str, data_dir: str = ".", variables=None, rtol: float = 1e-6,
     with tempfile.TemporaryDirectory() as t1, tempfile.TemporaryDirectory() as t2:
         for t in (t1, t2):
             shutil.copytree(data_dir, t, dirs_exist_ok=True)
-        orig = _original_ns(language, source, t1)
+        orig = _original_ns(language, original if (original and language == "sql") else source, t1)
         new = _converted_ns(language, converted, t2)
         # Spark DataFrames are lazy: they read the CSVs when first used, so the comparison must happen while the data folders still exist
         for n in variables or _default_names(orig):
@@ -426,7 +439,7 @@ def build_harness(original: str, converted: str, variables=None, rtol: float = 1
     why = unverifiable_reason(language)
     if why:
         raise NotVerifiable(f"{language}: {why}")
-    funcs = "\n\n".join(inspect.getsource(f) for f in (_norm, compare_frames, _as_pandas, _compare_values, _run, _notebook_code, _split_sql, _is_query, _csv_tables,
+    funcs = "\n\n".join(inspect.getsource(f) for f in (_isnum, _norm, compare_frames, _as_pandas, _compare_values, _run, _notebook_code, _split_sql, _is_query, _csv_tables,
                                                        _orig_sql, _conv_sql, _orig_r, _original_ns, _converted_ns, _default_names)) + "\n\n_R_TAIL = " + repr(_R_TAIL)
     head = "import json, math, os, shutil, sys, tempfile, traceback\n\n" + funcs + "\n\n"
     consts = (f"ORIGINAL = {original!r}\nCONVERTED = {converted!r}\nVARS = {list(variables) if variables else None!r}\nRTOL = {float(rtol)!r}\n"

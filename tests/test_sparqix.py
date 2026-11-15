@@ -3142,3 +3142,52 @@ def test_web_origin_must_match_host_and_port():
 def test_pandas_round_uses_half_even_like_pandas():
     code, _ = convert("import pandas as pd\ndf = pd.read_csv('a.csv')\ndf['x'] = df['x'].round(1)\ny = round(2.5)\n", "pandas")
     assert "F.bround(" in code and "F.round(" not in code
+
+
+def test_string_agg_inline_order_by_becomes_valid_spark():
+    """BigQuery / Postgres STRING_AGG(x, sep ORDER BY k): the ORDER BY must not be left inside array_join(...) (invalid Spark SQL)"""
+    def conv(q):
+        return convert(q, "sql", sql_dialect="bigquery", sql_out="sql")[0]
+    a = conv("SELECT STRING_AGG(c, ',' ORDER BY c) FROM t")
+    assert "ORDER BY" not in a and "sort_array(collect_list(c))" in a
+    b = conv("SELECT STRING_AGG(c, '|' ORDER BY id DESC) FROM t")
+    assert "ORDER BY" not in b and "struct(id AS _k, c AS _v)" in b and ", false)" in b and "'|'" in b
+    assert "ORDER BY" not in conv("SELECT STRING_AGG(c ORDER BY c DESC) FROM t")
+    assert conv("SELECT STRING_AGG(c, ',') FROM t") == "SELECT array_join(collect_list(c), ',') FROM t;"
+
+
+def test_verify_can_use_a_hand_written_original_for_dialect_sql(monkeypatch):
+    pytest.importorskip("pandas")
+    from sparqix import verify as V
+    seen = {}
+    monkeypatch.setattr(V, "_orig_sql", lambda src, wd: seen.setdefault("orig", src) and {"query_1": None})
+    monkeypatch.setattr(V, "_conv_sql", lambda code, wd: seen.setdefault("conv", code) and {"query_1": None})
+    monkeypatch.setattr(V, "_compare_values", lambda n, a, b, r: [])
+    monkeypatch.setattr(V, "_as_pandas", lambda v, errors=None: object())
+    V.verify("SEL id FROM sales;", HERE, language="sql", dialect="teradata", original="SELECT id FROM sales;")
+    assert seen["orig"] == "SELECT id FROM sales;" and "SELECT id FROM sales" in seen["conv"] and "SEL " not in seen["conv"]
+
+
+def test_e2e_dialect_cases_that_duckdb_cannot_run_have_an_oracle():
+    cases = os.path.join(HERE, "e2e", "cases")
+    for name in os.listdir(cases):
+        parts = name.split(".")
+        if name.endswith(".sql") and not name.endswith(".oracle.sql") and len(parts) > 2 and parts[-2] in ("teradata", "bigquery", "databricks"):
+            assert os.path.exists(os.path.join(cases, name[:-4] + ".oracle.sql")), name
+
+
+def test_compare_frames_treats_decimal_like_float():
+    """Spark returns DECIMAL columns as decimal.Decimal; the original (pandas/DuckDB) holds floats: equal numbers must compare equal"""
+    pytest.importorskip("pandas")
+    import decimal
+    import pandas as pd
+    from sparqix.verify import compare_frames
+    a = pd.DataFrame({"k": ["a", "b", "c"], "total": [2310.4800000000005, 1.5, 7.0]})
+    b = pd.DataFrame({"k": ["a", "b", "c"], "total": [decimal.Decimal("2310.48"), decimal.Decimal("1.50"), decimal.Decimal("7.00")]})
+    assert compare_frames(a, b) == [] and compare_frames(b, a) == []
+    c = b.copy()
+    c.loc[0, "total"] = decimal.Decimal("2310.49")
+    assert compare_frames(a, c)                                     # a real difference is still reported
+    n = pd.DataFrame({"k": ["a"], "v": [None]})
+    m = pd.DataFrame({"k": ["a"], "v": [decimal.Decimal("1")]})
+    assert compare_frames(n, m)                                     # NULL vs a number still differs
