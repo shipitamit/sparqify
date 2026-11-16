@@ -5,6 +5,8 @@ sparqix is a **migration aid, not a guarantee**: read [docs/limits.md](docs/limi
 
 ## [0.1.0] - Unreleased (first beta)
 
+Install with `pip install pysparqix` (the name `sparqix` was refused by PyPI as too similar to an existing project). The command is still `sparqix` and the import is still `import sparqix`.
+
 ### Converters
 - Python/pandas, Polars, Dask, R (dplyr/tidyr), SAS (including macros), Jupyter notebooks, dbt models, Excel formulas, Scala, Java streams and plain Python to PySpark.
 - SQL with 40 dialects (Teradata, Oracle, T-SQL, BigQuery, Snowflake, Databricks, PostgreSQL, MySQL, Hive, DB2, Netezza, Vertica, ClickHouse, SAP HANA, Informix, Firebird, Impala, Trino and more) to Spark SQL. Dialects that share a family reuse its rules; the report says which family was used.

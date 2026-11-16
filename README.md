@@ -9,7 +9,7 @@ Zero dependencies (stdlib only). Output always parses; anything it cannot transl
 ## Install
 
 ```bash
-pip install sparqix           # from PyPI (Python 3.9+)
+pip install pysparqix         # from PyPI (Python 3.9+); the package is pysparqix, the command and the import are sparqix
 sparqix --help
 
 pip install .                 # from a checkout, or run in place: python -m sparqix ...

@@ -3476,3 +3476,42 @@ def test_supply_chain_files_are_in_place_and_the_image_pin_script_works(tmp_path
         froms = [l for l in f.read_text().splitlines() if l.startswith("FROM ")]
         assert froms and all(l.split()[1] == f"python:3.12-slim@{digest}" for l in froms), froms
     assert "AS build" in (tmp_path / "Dockerfile").read_text()                           # the stage name survives
+
+
+def test_pin_actions_script_rewrites_uses_lines_and_leaves_no_backups(tmp_path):
+    import shutil
+    import subprocess
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
+    root = os.path.join(HERE, "..")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / "bin").mkdir()
+    shutil.copy(os.path.join(root, "scripts", "pin_actions.sh"), tmp_path / "scripts")
+    for f in glob.glob(os.path.join(root, ".github", "workflows", "*.yml")):
+        shutil.copy(f, tmp_path / ".github" / "workflows")
+    shutil.copy(os.path.join(root, "action.yml"), tmp_path / "action.yml")
+    fake = tmp_path / "bin" / "gh"                       # `gh api repos/<o>/<r>/commits/<tag> --jq .sha` -> a fixed commit id
+    fake.write_text("#!/bin/sh\necho " + "c" * 40 + "\n")
+    fake.chmod(0o755)
+    env = dict(os.environ, PATH=f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    before = "".join(open(f).read() for f in sorted(glob.glob(str(tmp_path / ".github" / "workflows" / "*.yml"))))
+    assert re.search(r"uses: actions/checkout@v\d", before)
+    for _ in range(2):                                   # second run: everything is pinned already, nothing changes
+        r = subprocess.run([bash, str(tmp_path / "scripts" / "pin_actions.sh")], env=env, capture_output=True, text=True)
+        assert r.returncode == 0, r.stderr
+    after = "".join(open(f).read() for f in sorted(glob.glob(str(tmp_path / ".github" / "workflows" / "*.yml"))))
+    ext = re.findall(r"uses: ([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@(\S+)(?: # (\S+))?", after)
+    assert ext and all(sha == "c" * 40 and tag for _, sha, tag in ext), ext          # every external action: full sha + the tag kept as a comment
+    assert "uses: ./" in after                                                       # the local action is left alone
+    assert not glob.glob(str(tmp_path / "**" / "*.bak"), recursive=True) and not glob.glob(str(tmp_path / "**" / "*-E"), recursive=True)
+
+
+def test_pypi_name_is_pysparqix_while_command_and_import_stay_sparqix():
+    root = os.path.join(HERE, "..")
+    py = open(os.path.join(root, "pyproject.toml")).read()
+    assert re.search(r'(?m)^name = "pysparqix"$', py)
+    assert re.search(r'(?m)^sparqix = "sparqix\.cli:main"$', py) and 'packages = ["sparqix"]' in py
+    readme = open(os.path.join(root, "README.md")).read()
+    assert "pip install pysparqix" in readme and not re.search(r"pip install sparqix\b", readme)
