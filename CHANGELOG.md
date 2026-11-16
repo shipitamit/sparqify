@@ -3,7 +3,7 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 sparqix is a **migration aid, not a guarantee**: read [docs/limits.md](docs/limits.md) before relying on a conversion.
 
-## [0.1.0] - Unreleased (first beta)
+## [0.1.0] - 2026-11-15 (first beta)
 
 Install with `pip install pysparqix` (the name `sparqix` was refused by PyPI as too similar to an existing project). The command is still `sparqix` and the import is still `import sparqix`.
 
