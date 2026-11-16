@@ -385,7 +385,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         import time
         t0 = getattr(self, "_t0", None)
-        rec = {"ts": round(time.time(), 3), "ip": self._client_ip(), "method": self.command, "path": (self.path or "").split("?")[0][:200],
+        rec = {"ts": round(time.time(), 3), "ip": self._client_ip(), "user": getattr(self, "_user", None), "method": self.command, "path": (self.path or "").split("?")[0][:200],
                "status": int(code) if str(code).isdigit() else 0, "ms": int((time.monotonic() - t0) * 1000) if t0 else None}
         sys.stderr.write(json.dumps(rec) + "\n")
 
@@ -434,6 +434,46 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(code, json.dumps({"error": msg}))
 
     # --- request checks ---------------------------------------------------------------------------
+    def _authenticate(self, query_token: str = ""):
+        """(user, method) for this request, or None. Order: a user name from the trusted proxy (needs the proxy secret), a per-user token,
+        the shared token. The token comes from X-Sparqix-Token, `Authorization: Bearer`, or (page load only) the ?token= query."""
+        from . import webauth as W
+        srv = self.server
+        if srv.auth_header:
+            sec = self.headers.get("X-Sparqix-Proxy-Secret") or ""
+            if sec and hmac.compare_digest(sec.encode(), srv.proxy_secret.encode()):
+                who = (self.headers.get(srv.auth_header) or "").strip()
+                if W.HEADER_NAME_RE.match(who):
+                    return who, "proxy"
+        given = self.headers.get("X-Sparqix-Token") or ""
+        if not given and (self.headers.get("Authorization") or "").lower().startswith("bearer "):       # lets Prometheus scrape /metrics
+            given = self.headers["Authorization"][7:].strip()
+        given = given or query_token
+        if given:
+            user = srv.users.find(given) if srv.users else None
+            if user:
+                return user, "token"
+            if srv.token and hmac.compare_digest(given.encode(), srv.token.encode()):
+                return W.SHARED, "shared-token"
+        return None
+
+    def _require_login(self, query_token: str = "", page: bool = False) -> bool:
+        """failed-attempt throttle + authentication; sets self._user / self._auth. True when the request may go on."""
+        ip = self._client_ip()
+        if _throttled(ip):
+            with _stats_lock:
+                _stats["throttled"] += 1
+            self._err(429, "too many failed attempts: wait a minute")
+            return False
+        who = self._authenticate(query_token)
+        if who is None:
+            _throttled(ip, record=True)
+            self._err(401, "sign in required (or send a valid access token)" if self.server.auth_header
+                      else "open the URL printed by `sparqix serve` (it contains the access token)" if page else "missing or wrong access token")
+            return False
+        self._user, self._auth = who
+        return True
+
     def _guard(self, post: bool, api: bool):
         """Host allow-list (DNS rebinding), same-origin + JSON content type (CSRF), optional token. Returns True when allowed."""
         srv = self.server
@@ -451,20 +491,8 @@ class Handler(BaseHTTPRequestHandler):
         if post and (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
             self._err(415, "Content-Type must be application/json")
             return False
-        if srv.token and api:
-            ip = self._client_ip()
-            if _throttled(ip):
-                with _stats_lock:
-                    _stats["throttled"] += 1
-                self._err(429, "too many failed attempts: wait a minute")
-                return False
-            given = self.headers.get("X-Sparqix-Token") or ""
-            if not given and (self.headers.get("Authorization") or "").lower().startswith("bearer "):       # lets Prometheus scrape /metrics
-                given = self.headers["Authorization"][7:].strip()
-            if not hmac.compare_digest(given.encode(), srv.token.encode()):
-                _throttled(ip, record=True)
-                self._err(401, "missing or wrong access token")
-                return False
+        if srv.auth_enabled and api and not self._require_login():
+            return False
         return True
 
     def do_GET(self):
@@ -479,17 +507,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, _metrics_text(), "text/plain")
         if path in ("/", "/index.html"):
             from urllib.parse import parse_qs
-            if self.server.token and _throttled(self._client_ip()):
-                return self._err(429, "too many failed attempts: wait a minute")
-            if self.server.token and not hmac.compare_digest((parse_qs(query).get("token") or [""])[0].encode(), self.server.token.encode()):
-                _throttled(self._client_ip(), record=True)
-                return self._err(401, "open the URL printed by `sparqix serve` (it contains the access token)")
+            if self.server.auth_enabled:
+                from urllib.parse import parse_qs
+                if not self._require_login((parse_qs(query).get("token") or [""])[0], page=True):
+                    return
             nonce = secrets.token_urlsafe(18)
             page = PAGE.replace("__LANGS__", json.dumps(LANGS)).replace("__DIALECTS__", json.dumps(DIALECTS))
             page = page.replace("<style>", f'<style nonce="{nonce}">').replace("<script>", f'<script nonce="{nonce}">')
             return self._send(200, page, "text/html", nonce=nonce)
         if path == "/ui.js":
             return self._send(200, UI_JS, "application/javascript")
+        if path == "/api/whoami":
+            return self._send(200, json.dumps({"user": getattr(self, "_user", None), "auth": getattr(self, "_auth", "none")}))
         if path == "/api/examples":
             return self._send(200, json.dumps(list_examples("orch" if "kind=orch" in query else "convert")))
         if path == "/api/example":
@@ -523,6 +552,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("JSON object expected")
         except (ValueError, OSError) as e:
             return self._err(400, f"invalid JSON: {_clip(e, 120)}")
+        key = getattr(self, "_user", None) or self._client_ip()           # per user when people sign in, else per client address
+        if not self.server.user_limit.hit(key):
+            return self._err(429, "rate limit: too many requests, wait a moment")
+        ai = d.get("ai") if isinstance(d.get("ai"), dict) else {}
+        if (path == "/api/agent" or (ai.get("enabled") and not ai.get("dry_run"))) and not self.server.ai_cap.hit(key):
+            return self._err(429, "daily limit for AI requests reached")
         if not _busy.acquire(blocking=False):
             return self._err(503, "server busy: try again in a moment")
         with _stats_lock:
@@ -554,11 +589,33 @@ class _Server(ThreadingHTTPServer):
     allowed_hosts = frozenset(LOOPBACK)
     trusted_proxies = 0
     access_log = False
+    users = None
+    auth_header = None
+    proxy_secret = None
+    auth_enabled = False
+
+    def __init__(self, *a, **k):
+        from . import webauth as W
+        super().__init__(*a, **k)
+        self.users = W.UserStore(None)
+        self.user_limit = W.SlidingLimit(0)
+        self.ai_cap = W.DailyCap(0)
 
 
-def make_server(host="127.0.0.1", port=8765, token=None, allowed_hosts=(), trusted_proxies=0, access_log=False):
+def make_server(host="127.0.0.1", port=8765, token=None, allowed_hosts=(), trusted_proxies=0, access_log=False,
+                users_file=None, auth_header=None, proxy_secret=None, user_rpm=0, ai_daily_limit=0):
+    from . import webauth as W
+    users = W.UserStore(users_file)                      # raises UsersFileError before anything is bound
+    if auth_header and (not proxy_secret or len(proxy_secret) < 16 or int(trusted_proxies or 0) < 1 or not W.HEADER_NAME_RE.match(auth_header.replace("-", "_"))):
+        raise W.UsersFileError("--auth-header needs --proxy-secret (at least 16 characters, sent by the proxy as X-Sparqix-Proxy-Secret), --trusted-proxies 1 or more, and a plain header name")
     srv = _Server((host, port), Handler)
+    srv.users = users
+    srv.auth_header = auth_header or None
+    srv.proxy_secret = proxy_secret if auth_header else None
+    srv.user_limit = W.SlidingLimit(int(user_rpm or 0))
+    srv.ai_cap = W.DailyCap(int(ai_daily_limit or 0))
     srv.token = token or None
+    srv.auth_enabled = bool(srv.token or users or srv.auth_header)
     srv.trusted_proxies = max(0, min(int(trusted_proxies or 0), 5))
     srv.access_log = bool(access_log)
     srv.allowed_hosts = frozenset(set(LOOPBACK) | {_host_only(host)} | {_host_only(h) for h in allowed_hosts if h})
@@ -580,19 +637,35 @@ def main(argv) -> int:
                         "log is then taken from X-Forwarded-For, and X-Forwarded-Proto: https turns on HSTS. Only set it when the pod accepts traffic from those proxies alone")
     p.add_argument("--access-log", action="store_true", default=os.environ.get("SPARQIX_ACCESS_LOG") == "1",
                    help="one JSON line per request on stderr (method, path without query, status, client address, ms); or SPARQIX_ACCESS_LOG=1")
+    p.add_argument("--users-file", default=os.environ.get("SPARQIX_USERS_FILE"),
+                   help="per-user tokens: one `name:sha256:<hash>` line per user (create with `sparqix users add NAME --file F`); re-read when the file changes; or SPARQIX_USERS_FILE")
+    p.add_argument("--auth-header", default=os.environ.get("SPARQIX_AUTH_HEADER"),
+                   help="take the user name from this header set by a reverse proxy that signs users in (e.g. X-Auth-Request-Email); needs --proxy-secret and --trusted-proxies")
+    p.add_argument("--proxy-secret", default=os.environ.get("SPARQIX_PROXY_SECRET"),
+                   help="secret the proxy sends as X-Sparqix-Proxy-Secret; without it --auth-header is ignored, so nobody reaching the pod directly can pose as a user (or SPARQIX_PROXY_SECRET)")
+    p.add_argument("--user-rpm", type=int, default=_env_int("SPARQIX_USER_RPM", 0, 0, 100000),
+                   help="most conversion requests per user (per client address without sign-in) per minute; 0 = no limit; or SPARQIX_USER_RPM")
+    p.add_argument("--ai-daily-limit", type=int, default=_env_int("SPARQIX_AI_DAILY_LIMIT", 0, 0, 1000000),
+                   help="most AI requests per user per day (UTC), counted per pod; 0 = no limit; or SPARQIX_AI_DAILY_LIMIT")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     a = p.parse_args(argv)
     a.allowed_host += [h for h in os.environ.get("SPARQIX_ALLOWED_HOSTS", "").split(",") if h.strip()]
     token = secrets.token_urlsafe(24) if a.token == "auto" else a.token
     local = a.host in LOOPBACK
-    if not local and not token and not a.allow_insecure_remote:
+    if not local and not token and not a.users_file and not a.auth_header and not a.allow_insecure_remote:
         print("refusing to listen on a non-local address without an access token: use --token auto (and put TLS in front), "
               "or --allow-insecure-remote if you really mean it", file=sys.stderr)
         return 2
-    srv = make_server(a.host, a.port, token, a.allowed_host, a.trusted_proxies, a.access_log)
+    from . import webauth as W
+    try:
+        srv = make_server(a.host, a.port, token, a.allowed_host, a.trusted_proxies, a.access_log,
+                          a.users_file, a.auth_header, a.proxy_secret, a.user_rpm, a.ai_daily_limit)
+    except (W.UsersFileError, OSError) as e:
+        print(f"sparqix serve: {e}", file=sys.stderr)
+        return 2
     shown = token if (token and a.token == "auto") else None            # a token you supplied is never echoed into logs
     url = f"http://{a.host}:{srv.server_address[1]}/" + (f"?token={shown}" if shown else "")
-    if token and not shown:
+    if (token or a.users_file) and not shown:
         url += "  (open it with ?token=<your token>)"
     print(f"sparqix web UI on {url}  (Ctrl+C to stop)")
     if not local:
@@ -765,7 +838,7 @@ table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{text-align:left
 footer{max-width:1320px;margin:8px auto 30px;padding:0 18px;color:var(--mut);font-size:12.5px}
 </style></head><body>
 <header><h1><b>Sparq</b>ix</h1><span class="sub">convert pandas, SQL, SAS, R, Informatica, procedures, streaming… to Apache Spark</span>
-<div class="tabs"><button id="tabC" class="on">Convert</button><button id="tabP">Project</button><button id="tabO">Orchestrate</button><button id="theme" title="Toggle light / dark">◐</button></div></header>
+<div class="tabs"><button id="tabC" class="on">Convert</button><button id="tabP">Project</button><button id="tabO">Orchestrate</button><button id="theme" title="Toggle light / dark">◐</button><span id="who" class="sub" title="signed in as"></span></div></header>
 <main>
 <div class="opts" id="optbar">
   <label>From<select id="lang"></select></label>
@@ -1005,6 +1078,7 @@ $('ogo').onclick=async()=>{
 };
 $('ozip').onclick=()=>{const n=Object.keys(ofiles);if(n.length)dl('sparqix-jobs.zip',U.makeZip(n.map(k=>({name:k,data:ofiles[k]}))),'application/zip')};
 $('fileO').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{$('osrc').value=await readText(f);$('ogo').click()}catch(er){$('oout').innerHTML='<div class="err">'+U.esc(er.message)+'</div>'}};
+api('/api/whoami').then(r=>r.json()).then(j=>{if(j.user)$('who').textContent=j.user}).catch(()=>{});
 api('/api/examples?kind=orch').then(r=>r.json()).then(l=>l.forEach(n=>$('oexample').add(new Option(n,n))));
 $('oexample').onchange=async e=>{if(!e.target.value)return;const j=await (await api('/api/example?name='+encodeURIComponent(e.target.value))).json();$('osrc').value=j.source;$('ogo').click()};
 /* ---- examples, tabs, theme */

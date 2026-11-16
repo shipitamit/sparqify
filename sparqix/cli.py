@@ -18,6 +18,9 @@ def main(argv=None) -> int:
     if argv and argv[0] == "serve":
         from .web import main as wmain
         return wmain(argv[1:])
+    if argv and argv[0] == "users":
+        from .webauth import users_main
+        return users_main(argv[1:])
     if argv and argv[0] == "orchestrate":
         from .orchestrate import main as omain
         return omain(argv[1:])

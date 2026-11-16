@@ -29,6 +29,24 @@ Open `https://<your-host>/?token=<token>`. The page removes the token from the a
 Quick local check without ingress: `kubectl -n sparqix port-forward svc/sparqix 8765:80`, then open `http://localhost:8765/?token=...`
 (port-forwarding keeps the Host header `localhost:8765`, which is always accepted).
 
+## Who can sign in
+Out of the box there is one shared token (`SPARQIX_TOKEN`): fine for you or a small trusted team. To tell people apart, use either (or both):
+
+**Per-user tokens.** Create a token per person; the users file keeps only hashes, so it holds nothing anyone can sign in with:
+
+    sparqix users add alice --file users          # prints alice's token once; appends `alice:sha256:<hash>` to ./users
+    sparqix users add bob   --file users
+    kubectl -n sparqix create secret generic sparqix-users --from-file=users=users
+    # then uncomment the `users` volume, its mount and SPARQIX_USERS_FILE in deployment.yaml
+
+Give each person their token; they open `https://<host>/?token=<their token>`. To add or remove someone, update the Secret: the file is re-read when it changes
+(Kubernetes refreshes mounted Secrets within a minute or so; no restart). The access log and the page header show who is signed in.
+
+**Single sign-on.** Put an OIDC proxy (oauth2-proxy) in front and let sparqix read the verified e-mail from a header: see `deploy/k8s/ingress-oidc.example.yaml`.
+sparqix only trusts that header when the request carries the proxy secret too (`SPARQIX_PROXY_SECRET`, at least 16 characters), and only with `SPARQIX_TRUSTED_PROXIES=1` or more.
+
+Either way, `SPARQIX_USER_RPM` (conversions per user per minute) and `SPARQIX_AI_DAILY_LIMIT` (AI requests per user per day) apply per person. They are counted per pod.
+
 ## What the manifests set up
 - Deployment (replica count owned by the HPA, minimum 2; rolling update, spread across nodes), Service (ClusterIP), PodDisruptionBudget, HPA (CPU 70%, 2-6 pods).
 - Pod Security `restricted`, non-root, read-only root filesystem (a small `emptyDir` at `/tmp` for the per-request worker processes), no service-account token.

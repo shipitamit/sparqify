@@ -37,17 +37,17 @@ that someone may later run on a cluster. The main risks are:
 - **Generated code is still code.** Review it before running, especially from inputs you do not trust. `guard_output` is a safety net, not a proof.
 - Redaction is pattern-based; a secret in an unusual format can still reach the AI API. Use `--ai-dry-run` to see exactly what would be sent, or leave AI off for sensitive code.
 - `verify --trust` runs arbitrary code with your permissions. Use a throw-away container for third-party scripts.
-- The web server is meant for one local user. If you must expose it, put it behind TLS and authentication (a reverse proxy) in addition to `--token`.
+- The web server is meant for one local user or a small trusted team. If you expose it, put it behind TLS. To tell people apart use per-user tokens (`--users-file`, `sparqix users add`) or single sign-on at a reverse proxy (`--auth-header` together with `--proxy-secret` and `--trusted-proxies`). The identity then appears in the access log, and `--user-rpm` / `--ai-daily-limit` limit each person. Users files hold SHA-256 hashes of random tokens, never the tokens; the proxy-supplied name is only trusted when the request also carries the proxy secret.
 - Resource limits rely on OS facilities (`resource`, process isolation) and are weaker on Windows.
 - Expression parsers have recursion limits only through Python's own; extreme inputs end as `ConvertError`, not a crash.
 
 ## Deployment notes
 
-- Behind a reverse proxy or ingress every request appears to come from the proxy's address, so the brute-force throttle then locks out *all* users for a minute after 10 bad attempts. Rate-limit per client at the ingress as well, and keep the token long and random.
+- Behind a reverse proxy or ingress every request appears to come from the proxy's address unless you set `--trusted-proxies`; without it the brute-force throttle locks out *all* users for a minute after 10 bad attempts. Set it, rate-limit per client at the ingress as well, and keep tokens long and random.
 - `.github/workflows/image.yml` builds the image, scans it with Trivy (fails on fixable HIGH/CRITICAL), checks it runs as non-root with a read-only filesystem and dropped capabilities, validates the manifests, and on a version tag pushes it with provenance + SBOM and signs it with cosign (keyless). Verify with `cosign verify` before deploying.
 - Run `scripts/pin_actions.sh` once (needs `gh auth login`) to replace action version tags with commit SHAs; the tags in the repo are not pinned yet because they could not be resolved offline. Also pin the `FROM` images in the `Dockerfile` by digest.
 - The app has no third-party Python dependencies, so the OS layer is the main thing to patch.
-- Rotate the token by updating the Secret and restarting the Deployment.
+- Rotate the shared token by updating the Secret and restarting the Deployment. Per-user tokens: update the users Secret; the server re-reads the file when it changes (a bad file is ignored and the previous users stay valid). Remove a person by deleting their line.
 - Behind a reverse proxy set `--trusted-proxies N` / `SPARQIX_TRUSTED_PROXIES`: the failed-token throttle then keys on the client address from `X-Forwarded-For` (the Nth entry from the right, which a client cannot forge) and HSTS is sent for https. `--access-log` / `SPARQIX_ACCESS_LOG=1` logs method, path without query, status, client and duration; never tokens or bodies. `/metrics` requires the token.
 - Worker count and memory are set through `SPARQIX_MAX_CONCURRENT` / `SPARQIX_WORKER_MEMORY_MB`; keep the container memory limit above their product plus about 300 MB. The server handles SIGTERM (stops accepting, finishes running conversions for `SPARQIX_DRAIN_SECONDS`).
 

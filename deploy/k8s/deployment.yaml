@@ -50,7 +50,16 @@ spec:
             # One ingress in front: the client address (failed-token throttle, access log) comes from X-Forwarded-For, and HSTS is sent for https requests.
             # Only correct while the NetworkPolicy lets nothing but the ingress controller reach the pod. Set 0 if you connect without a proxy.
             - {name: SPARQIX_TRUSTED_PROXIES, value: "1"}
-            - {name: SPARQIX_ACCESS_LOG, value: "1"}          # one JSON line per request on stderr (no query string, no token)
+            - {name: SPARQIX_ACCESS_LOG, value: "1"}          # one JSON line per request on stderr (no query string, no token); names the signed-in user
+            # Per-user limits (counted per pod; with 2-6 replicas the effective limit is a little higher). 0 turns a limit off.
+            - {name: SPARQIX_USER_RPM, value: "60"}            # conversion requests per user per minute
+            - {name: SPARQIX_AI_DAILY_LIMIT, value: "100"}     # AI requests per user per day (the AI key is the one thing worth stealing)
+            # Per-user tokens instead of one shared token: create the Secret `sparqix-users` (see deploy/README.md), mount it (volume below), then uncomment:
+            # - {name: SPARQIX_USERS_FILE, value: /etc/sparqix/users/users}
+            # Single sign-on via an OIDC proxy (see ingress-oidc.example.yaml): uncomment both, and keep SPARQIX_TRUSTED_PROXIES above at 1 or more.
+            # - {name: SPARQIX_AUTH_HEADER, value: X-Auth-Request-Email}
+            # - name: SPARQIX_PROXY_SECRET
+            #   valueFrom: {secretKeyRef: {name: sparqix, key: proxy-secret}}
             - name: SPARQIX_AI_API_KEY
               valueFrom: {secretKeyRef: {name: sparqix, key: ai-api-key, optional: true}}
           lifecycle:
@@ -72,9 +81,12 @@ spec:
             capabilities: {drop: ["ALL"]}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
+            # - {name: users, mountPath: /etc/sparqix/users, readOnly: true}      # per-user tokens (see SPARQIX_USERS_FILE above)
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
+        # - name: users
+        #   secret: {secretName: sparqix-users}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname

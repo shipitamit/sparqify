@@ -3286,3 +3286,159 @@ def test_r_select_helpers_ranges_and_negation():
 def test_r_select_rename_mixed_with_helper_stays_todo():
     _, rep = convert('library(dplyr)\nd <- read.csv("s.csv")\na <- d %>% select(x = a, starts_with("b"))\n', "r")
     assert rep.todos
+
+
+# ---------------------------------------------------------------- web: per-user access
+def _auth_server(tmp_path, **kw):
+    import threading
+    from sparqix import web
+    from sparqix import webauth as W
+    f = tmp_path / "users"
+    toks = {}
+    lines = []
+    for name in ("alice", "bob"):
+        t, line = W.new_user_line(name)
+        toks[name] = t
+        lines.append(line)
+    f.write_text("# users\n" + "\n".join(lines) + "\n")
+    web._fails.clear()
+    srv = web.make_server("127.0.0.1", 0, users_file=str(f), **kw)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1], toks, f
+
+
+def test_users_file_parsing_is_strict_and_never_echoes_lines():
+    from sparqix import webauth as W
+    t, line = W.new_user_line("carol")
+    assert W.parse_users("# c\n\n" + line + "\n") == {"carol": W.hash_token(t)}
+    good = "dave:sha256:" + "a" * 64
+    for bad in ("nohash", "x:sha256:abc", "x:md5:" + "a" * 64, "bad name:sha256:" + "a" * 64, "shared:sha256:" + "a" * 64, good + "\n" + good):
+        with pytest.raises(W.UsersFileError) as e:
+            W.parse_users(bad)
+        assert "line" in str(e.value) and "a" * 64 not in str(e.value)
+    with pytest.raises(W.UsersFileError):
+        W.new_user_line("not a name!")
+    assert W.hash_token("x") == __import__("hashlib").sha256(b"x").hexdigest() and ":" not in t
+
+
+def test_web_per_user_tokens_identify_users_and_log_them(tmp_path, capfd):
+    import json as _j
+    from sparqix import web
+    srv, port, toks, f = _auth_server(tmp_path, access_log=True, token="shared-secret")
+    try:
+        who = lambda tok: _j.loads(_web_req(port, "GET", "/api/whoami", {"X-Sparqix-Token": tok})[2])
+        assert who(toks["alice"]) == {"user": "alice", "auth": "token"} and who(toks["bob"])["user"] == "bob"
+        assert who("shared-secret") == {"user": "shared", "auth": "shared-token"}
+        assert _web_req(port, "GET", "/api/whoami", {"X-Sparqix-Token": "nope"})[0] == 401
+        assert _web_req(port, "GET", "/api/whoami")[0] == 401
+        assert _web_req(port, "GET", "/api/whoami", {"Authorization": "Bearer " + toks["alice"]})[0] == 200
+        # page load with ?token= works per user, and a hash from the file is not a token
+        assert _web_req(port, "GET", "/?token=" + toks["bob"])[0] == 200
+        assert _web_req(port, "GET", "/")[0] == 401
+        import hashlib
+        assert _web_req(port, "GET", "/api/whoami", {"X-Sparqix-Token": hashlib.sha256(toks["alice"].encode()).hexdigest()})[0] == 401
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+    err = capfd.readouterr().err
+    recs = [_j.loads(x) for x in err.splitlines() if x.startswith("{")]
+    assert {"alice", "bob", "shared"} <= {r["user"] for r in recs} and any(r["user"] is None and r["status"] == 401 for r in recs)
+    assert toks["alice"] not in err and toks["bob"] not in err
+
+
+def test_web_users_file_is_reloaded_when_it_changes(tmp_path):
+    import os as _os
+    from sparqix import web
+    from sparqix import webauth as W
+    srv, port, toks, f = _auth_server(tmp_path)
+    try:
+        t, line = W.new_user_line("erin")
+        assert _web_req(port, "GET", "/api/whoami", {"X-Sparqix-Token": t})[0] == 401
+        st = _os.stat(f)
+        f.write_text(f.read_text() + line + "\n")
+        _os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 5_000_000_000))
+        assert _web_req(port, "GET", "/api/whoami", {"X-Sparqix-Token": t})[0] == 200
+        f.write_text("this is {{ not valid\n")                                      # a broken file keeps the previous users
+        _os.utime(f, ns=(st.st_atime_ns, st.st_mtime_ns + 9_000_000_000))
+        assert _web_req(port, "GET", "/api/whoami", {"X-Sparqix-Token": t})[0] == 200
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+
+
+def test_web_trusted_proxy_identity_needs_the_proxy_secret(tmp_path):
+    import json as _j
+    import threading
+    from sparqix import web
+    from sparqix import webauth as W
+    for bad in (dict(proxy_secret=None, trusted_proxies=1), dict(proxy_secret="short", trusted_proxies=1), dict(proxy_secret="x" * 20, trusted_proxies=0)):
+        with pytest.raises(W.UsersFileError):
+            web.make_server("127.0.0.1", 0, auth_header="X-Auth-Request-Email", **bad)
+    web._fails.clear()
+    srv = web.make_server("127.0.0.1", 0, auth_header="X-Auth-Request-Email", proxy_secret="s" * 24, trusted_proxies=1)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    ok = {"X-Sparqix-Proxy-Secret": "s" * 24, "X-Auth-Request-Email": "dana@example.com", "X-Forwarded-For": "1.2.3.4"}
+    try:
+        st, hd, b = _web_req(port, "GET", "/api/whoami", ok)
+        assert st == 200 and _j.loads(b) == {"user": "dana@example.com", "auth": "proxy"}
+        assert _web_req(port, "GET", "/", ok)[0] == 200                                        # the page itself needs no token behind the proxy
+        assert _web_req(port, "GET", "/api/whoami", {**ok, "X-Sparqix-Proxy-Secret": "w" * 24})[0] == 401      # wrong secret
+        assert _web_req(port, "GET", "/api/whoami", {k: v for k, v in ok.items() if k != "X-Sparqix-Proxy-Secret"})[0] == 401   # a client claiming a name directly
+        assert _web_req(port, "GET", "/api/whoami", {**ok, "X-Auth-Request-Email": "a b;<script>"})[0] == 401   # not a plain name
+        assert _web_req(port, "GET", "/api/whoami", {**ok, "X-Auth-Request-Email": ""})[0] == 401
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+
+
+def test_web_per_user_rate_limit_and_daily_ai_cap(tmp_path):
+    import json as _j
+    from sparqix import web
+    srv, port, toks, f = _auth_server(tmp_path, user_rpm=3, ai_daily_limit=2)
+    js = lambda u: {"Content-Type": "application/json", "X-Sparqix-Token": toks[u]}
+    conv = _j.dumps({"source": "x = 1\n", "language": "python"})
+    agent = _j.dumps({"source": "x = 1\n", "message": ""})                      # fails fast (no message) but counts as an AI request
+    try:
+        # the daily AI cap is per user: alice may make 2 AI requests, the third is refused; bob still has his own
+        assert [_web_req(port, "POST", "/api/agent", js("alice"), agent)[0] for _ in range(3)] == [400, 400, 429]
+        assert _web_req(port, "POST", "/api/agent", js("bob"), agent)[0] == 400
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+    (tmp_path / "rpm").mkdir()
+    srv, port, toks, f = _auth_server(tmp_path / "rpm", user_rpm=3)
+    try:
+        assert [_web_req(port, "POST", "/api/convert", js("alice"), conv)[0] for _ in range(4)] == [200, 200, 200, 429]
+        assert _web_req(port, "POST", "/api/convert", js("bob"), conv)[0] == 200                       # another user is not affected
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+
+
+def test_sparqix_users_add_writes_a_hash_only_file(tmp_path, capsys):
+    import os as _os
+    import stat
+    from sparqix import webauth as W
+    from sparqix.cli import main
+    f = tmp_path / "users"
+    assert main(["users", "add", "frank", "--file", str(f)]) == 0
+    out = capsys.readouterr().out
+    token = out.split("shown once, not stored anywhere in clear):")[1].split()[0]
+    users = W.parse_users(f.read_text())
+    assert list(users) == ["frank"] and users["frank"] == W.hash_token(token) and token not in f.read_text()
+    if _os.name == "posix":
+        assert stat.S_IMODE(_os.stat(f).st_mode) == 0o600
+    assert main(["users", "add", "frank", "--file", str(f)]) == 2                                # already there
+    assert main(["users", "add", "bad name"]) == 2
+    assert main(["users", "add", "gina"]) == 0 and "gina:sha256:" in capsys.readouterr().out    # without --file the line is only printed
+
+
+def test_k8s_manifests_wire_the_per_user_options():
+    k8s = os.path.join(HERE, "..", "deploy", "k8s")
+    dep = open(os.path.join(k8s, "deployment.yaml")).read()
+    assert 'SPARQIX_USER_RPM' in dep and 'SPARQIX_AI_DAILY_LIMIT' in dep
+    assert "SPARQIX_USERS_FILE" in dep and "secretName: sparqix-users" in dep                    # ready to uncomment
+    assert not re.search(r"(?m)^\s+- \{name: SPARQIX_USERS_FILE", dep)                           # off by default: a configured but missing file stops the server
+    oidc = open(os.path.join(k8s, "ingress-oidc.example.yaml")).read()
+    assert "auth-response-headers" in oidc and "X-Sparqix-Proxy-Secret" in oidc and "X-Auth-Request-Email" in oidc

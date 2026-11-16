@@ -1,0 +1,38 @@
+# Example: single sign-on in front of sparqix, so people sign in with your identity provider instead of sharing a token.
+# oauth2-proxy (or any OIDC auth proxy) does the sign-in; ingress-nginx asks it before every request and passes the verified e-mail on.
+# sparqix trusts that header only when the request also carries the proxy secret (a client that reaches the pod directly has no way to forge it).
+#
+# Needs on the Deployment:   SPARQIX_TRUSTED_PROXIES=1
+#                            SPARQIX_AUTH_HEADER=X-Auth-Request-Email
+#                            SPARQIX_PROXY_SECRET   (from the Secret: kubectl -n sparqix patch secret sparqix ... or create it with --from-literal=proxy-secret=...)
+# The shared token / per-user tokens keep working next to it (scripts, Prometheus), so keep them long and random or leave them out.
+#
+# The proxy secret is as secret as the objects that contain it: whoever can read this Ingress can read it. The NetworkPolicy (only the ingress
+# controller may reach the pod) is the main protection; the secret is a second one. Keep read access to Ingress objects to cluster admins.
+# ingress-nginx >= 1.9 disables configuration-snippet by default (allow-snippet-annotations); enable it only if you accept the trade-off,
+# or inject the header from oauth2-proxy itself (alpha config: injectRequestHeaders with a secretSource).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: sparqix
+  namespace: sparqix
+  annotations:
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/proxy-body-size: "30m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "180"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "180"
+    nginx.ingress.kubernetes.io/auth-url: "https://oauth2.example.com/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://oauth2.example.com/oauth2/start?rd=$scheme://$host$escaped_request_uri"
+    nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email"
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      proxy_set_header X-Sparqix-Proxy-Secret "REPLACE-WITH-THE-PROXY-SECRET";
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: [sparqix.example.com]
+      secretName: sparqix-tls
+  rules:
+    - host: sparqix.example.com
+      http:
+        paths:
+          - {path: /, pathType: Prefix, backend: {service: {name: sparqix, port: {name: http}}}}

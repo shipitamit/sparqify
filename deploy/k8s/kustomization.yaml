@@ -10,7 +10,7 @@ resources:
   - pdb.yaml
   - hpa.yaml
 # Not included on purpose: secret.example.yaml (create the Secret yourself), ingress.example.yaml (edit the host first) and
-# networkpolicy-ai-egress.example.yaml (outbound HTTPS, only for the AI features).
+# networkpolicy-ai-egress.example.yaml (outbound HTTPS, only for the AI features) and ingress-oidc.example.yaml (single sign-on).
 images:
   - name: ghcr.io/shipitamit/sparqix
     newTag: "0.1.0"
