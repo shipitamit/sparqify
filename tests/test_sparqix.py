@@ -3489,23 +3489,37 @@ def test_pin_actions_script_rewrites_uses_lines_and_leaves_no_backups(tmp_path):
     (tmp_path / ".github" / "workflows").mkdir(parents=True)
     (tmp_path / "bin").mkdir()
     shutil.copy(os.path.join(root, "scripts", "pin_actions.sh"), tmp_path / "scripts")
-    for f in glob.glob(os.path.join(root, ".github", "workflows", "*.yml")):
-        shutil.copy(f, tmp_path / ".github" / "workflows")
-    shutil.copy(os.path.join(root, "action.yml"), tmp_path / "action.yml")
+    # sample files written here, so the test does not depend on whether the repo's own workflows are pinned yet
+    (tmp_path / ".github" / "workflows" / "a.yml").write_text(
+        "jobs:\n  x:\n    steps:\n"
+        "      - uses: actions/checkout@v6\n        with: {persist-credentials: false}\n"
+        "      - uses: actions/setup-python@v6   # old comment\n"
+        "      - uses: pypa/gh-action-pypi-publish@release/v1\n"
+        "      - uses: aquasecurity/trivy-action@v0.36.0\n"
+        "      - uses: r-lib/actions/setup-r@v2\n"
+        "      - uses: ./\n")
+    (tmp_path / ".github" / "workflows" / "b.yml").write_text(
+        "jobs:\n  y:\n    steps:\n      - uses: actions/checkout@v6\n"
+        f"      - uses: docker/login-action@{'a' * 40} # v3\n")                       # already pinned: left as it is
+    (tmp_path / "action.yml").write_text("runs:\n  using: composite\n  steps:\n    - uses: actions/setup-python@v6\n")
     fake = tmp_path / "bin" / "gh"                       # `gh api repos/<o>/<r>/commits/<tag> --jq .sha` -> a fixed commit id
     fake.write_text("#!/bin/sh\necho " + "c" * 40 + "\n")
     fake.chmod(0o755)
     env = dict(os.environ, PATH=f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    before = "".join(open(f).read() for f in sorted(glob.glob(str(tmp_path / ".github" / "workflows" / "*.yml"))))
-    assert re.search(r"uses: actions/checkout@v\d", before)
+    files = sorted(glob.glob(str(tmp_path / ".github" / "workflows" / "*.yml"))) + [str(tmp_path / "action.yml")]
     for _ in range(2):                                   # second run: everything is pinned already, nothing changes
         r = subprocess.run([bash, str(tmp_path / "scripts" / "pin_actions.sh")], env=env, capture_output=True, text=True)
         assert r.returncode == 0, r.stderr
-    after = "".join(open(f).read() for f in sorted(glob.glob(str(tmp_path / ".github" / "workflows" / "*.yml"))))
-    ext = re.findall(r"uses: ([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@(\S+)(?: # (\S+))?", after)
-    assert ext and all(sha == "c" * 40 and tag for _, sha, tag in ext), ext          # every external action: full sha + the tag kept as a comment
+    after = "".join(open(f).read() for f in files)
+    ext = re.findall(r"uses: ([A-Za-z0-9_.-]+/[A-Za-z0-9_./-]+)@(\S+)(?: +# (\S+))?", after)
+    assert len(ext) == 8, ext
+    assert all(sha in ("c" * 40, "a" * 40) and tag for _, sha, tag in ext), ext          # full sha, tag kept as a comment
+    assert "actions/checkout@" + "c" * 40 + " # v6" in after and "pypa/gh-action-pypi-publish@" + "c" * 40 + " # release/v1" in after
+    assert "actions/setup-python@" + "c" * 40 + " # v6" in after and "old comment" not in after
+    assert "docker/login-action@" + "a" * 40 + " # v3" in after                            # an existing pin is untouched
     assert "uses: ./" in after                                                       # the local action is left alone
     assert not glob.glob(str(tmp_path / "**" / "*.bak"), recursive=True) and not glob.glob(str(tmp_path / "**" / "*-E"), recursive=True)
+
 
 
 def test_pypi_name_is_pysparqix_while_command_and_import_stay_sparqix():
