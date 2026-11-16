@@ -211,10 +211,21 @@ class Translator:
             return V("col", f"({l.code} {CMP[op]} {r.code})", df=l.df or r.df, boolean=True)
         raise Unsupported("unsupported comparison")
 
+    def v_IfExp(self, n):
+        """`a if cond else b` on columns -> F.when(cond, a).otherwise(b) (a NULL / NaN condition takes the else branch in both)"""
+        t, x, y = self.visit(n.test), self.visit(n.body), self.visit(n.orelse)
+        if t.kind != "col" or not t.boolean or x.kind not in ("col", "py") or y.kind not in ("col", "py") or (x.kind == "py" and y.kind == "py" and not t.df):
+            return self.fallback(n)
+        return V("col", f"F.when({t.code}, {self.col(x)}).otherwise({self.col(y)})", df=t.df or x.df or y.df,
+                 isstr=bool(x.isstr or y.isstr))
+
     def v_BoolOp(self, n):
         vs = [self.visit(x) for x in n.values]
         if all(v.kind == "py" for v in vs):
             return self.fallback(n)
+        if getattr(self, "row_ctx", False) and all(v.kind == "col" and v.boolean for v in vs):      # scalar `and` / `or` in a row lambda
+            sym = " & " if isinstance(n.op, ast.And) else " | "
+            return V("col", "(" + sym.join(v.code for v in vs) + ")", df=next((v.df for v in vs if v.df), None), boolean=True)
         raise Unsupported("use & / | (not and / or) on columns")
 
     def v_Attribute(self, n):
@@ -371,8 +382,20 @@ class Translator:
             return self.bq_write(a[0], a[1], mode)
         return None
 
+    ROW_STR = {"upper": "F.upper({})", "lower": "F.lower({})", "strip": "F.trim({})"}
+    ROW_CAST = {"str": "string", "int": "bigint", "float": "double"}
+
     def v_Call(self, n):
         f = n.func
+        if getattr(self, "row_ctx", False):          # inside df.apply(lambda r: ..., axis=1): r[...] are scalars, so Python's own str()/int()/float()/.upper() apply
+            if isinstance(f, ast.Name) and f.id in self.ROW_CAST and len(n.args) == 1 and not n.keywords and f.id not in self.vars:
+                v = self.visit(n.args[0])
+                if v.kind == "col":
+                    return V("col", f"{v.code}.cast({self.ROW_CAST[f.id]!r})", df=v.df, isstr=f.id == "str")
+            if isinstance(f, ast.Attribute) and f.attr in self.ROW_STR and not n.args and not n.keywords:
+                recv = self.visit(f.value)
+                if recv.kind == "col":
+                    return V("col", self.ROW_STR[f.attr].format(recv.code), df=recv.df, isstr=True)
         if self.bq_clients or "gbq" in ast.unparse(f):
             r = self.bq_call(n)
             if r is not None:
@@ -711,6 +734,18 @@ class Translator:
         if name in ("to_numpy", "to_dict", "to_list", "tolist", "to_records"):
             self.warn("collect() pulls all data to the driver - only safe for small results")
             return V("py", f"[r.asDict() for r in {c}.collect()]")
+        if name == "apply" and len(a) == 1 and isinstance(a[0], ast.Lambda) and set(kw) == {"axis"} and _lit(kw["axis"]) in (1, "columns"):
+            # df.apply(lambda r: <expression of r['x'] ...>, axis=1): a row-wise lambda over plain columns is just a column expression
+            self.row_ctx = True
+            try:
+                body = self.bind_lambda(a[0], c)
+            except Unsupported as e:
+                raise Unsupported(f"DataFrame.apply(axis=1): the lambda is not a plain column expression ({e}); rewrite it as column expressions, a UDF or mapInPandas")
+            finally:
+                self.row_ctx = False
+            if body.kind != "col":
+                raise Unsupported("DataFrame.apply(axis=1): the lambda does not return a column expression; rewrite it as column expressions, a UDF or mapInPandas")
+            return replace(body, df=body.df or c)
         if name in ("apply", "applymap", "iterrows", "itertuples", "iteritems", "items", "pipe", "transform"):
             raise Unsupported(f"DataFrame.{name}() is row-wise Python; rewrite as column expressions, a UDF or a pandas_udf / mapInPandas")
         if name in ("set_index", "sort_index", "loc", "iloc", "at", "iat", "stack", "unstack", "melt", "pct_change", "diff", "cumsum"):

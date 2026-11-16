@@ -1,0 +1,6 @@
+library(dplyr)
+sales <- read.csv("sales.csv")
+a <- sales %>% select(id, starts_with("am"), ends_with("ty")) %>% filter(qty > 5)
+b <- sales %>% select(region:qty, -dt) %>% filter(amount > 400)
+c2 <- sales %>% select(-starts_with("c"), -id)
+d <- sales %>% select(contains("RE"), id) %>% filter(id < 20)

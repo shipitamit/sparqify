@@ -71,7 +71,7 @@ Library: `from sparqix import convert; code, report = convert(src, "auto")`
 ## Honest limits
 Short version: [docs/limits.md](https://github.com/shipitamit/sparqix/blob/main/docs/limits.md). Details below.
 
-* Not every construct can be translated mechanically. `apply(axis=1)`, positional indexing and index semantics are flagged as TODO.
+* Not every construct can be translated mechanically. `apply(axis=1)` with a lambda that is not a plain column expression, positional indexing and index semantics are flagged as TODO.
 * pandas: `shift`/`diff`/`pct_change`/`cumsum`/`cummax`/`cummin`/`rolling(n)`/`expanding()` (also per `groupby` and in `groupby().transform(lambda ...)`) become `Window` functions,
   ordered by the last `sort_values` (otherwise by current row order, with a warning). `iterrows`/`itertuples` loops that only *read* rows become a driver-side
   `toLocalIterator()` loop (slow, not distributed); loops that write back into the DataFrame stay TODO. `rank(method='min'|'dense'|'first', ascending=...)` (also per `groupby`) becomes `rank`/`dense_rank`/`row_number` over a window (nulls stay null, result is a double like pandas). Still TODO: `rank()` with the default `method='average'` or `'max'`, `cumprod`, `ewm`, time-based or centered rolling windows, `rolling().median()/count()`.
@@ -82,7 +82,7 @@ Short version: [docs/limits.md](https://github.com/shipitamit/sparqix/blob/main/
   NULL elements are dropped. Still TODO: `NULLS FIRST/LAST`, a non-literal `LIMIT`, `FILTER (WHERE ...)`, `DISTINCT` ordered by another expression.
 * Excel: `VLOOKUP` (exact and approximate), `XLOOKUP` (with `if_not_found`) and `INDEX(range, MATCH(key, range, 0))` become left joins through small `_xl_lookup`/`_xl_approx` helpers (first match wins, no match = NULL). The table must be a range on another sheet (`Sheet2!A:C`); each sheet is read with `spark.table(...)` and columns are the sheet letters unless mapped with `--excel-columns "Sheet2.A=sku"`. Excel text matching is case-insensitive, Spark's is not. Still TODO: `HLOOKUP`, `MATCH` alone, `INDEX` by row number, `XLOOKUP` match/search modes, approximate `MATCH`.
 * R: `lag`/`lead`/`cumsum`/`cummax`/`cummin`/`row_number`, `slice`/`slice_head`/`slice_tail`/`slice_max`/`slice_min`/`slice_sample` (grouped too), `pivot_longer` and `pivot_wider` convert
-  (order from `arrange()`, else current row order with a warning). Selection helpers (`starts_with`, `-col`, `a:c`), `prop=`, several `names_from`/`values_from` columns and `names_prefix` stay TODO.
+  (order from `arrange()`, else current row order with a warning). Selection helpers inside `pivot_longer`/`pivot_wider` (`select()` supports `starts_with`, `ends_with`, `contains`, `everything`, `a:c` and `-x`), `prop=`, several `names_from`/`values_from` columns and `names_prefix` stay TODO.
 * Semantics that differ are reported as WARNINGs (e.g. `drop_duplicates` keeps an arbitrary row in Spark,
   `to_csv` writes a directory, `apply` becomes a StringType UDF).
 * Output was verified by golden tests and by checking it parses; it has **not** been executed against a live
@@ -177,7 +177,7 @@ For pandas input, `--mode pandas-api` keeps your code almost verbatim and target
 `import pandas as pd` becomes `import pyspark.pandas as ps`, `pd.` becomes `ps.` (also in type hints and
 `from pandas import ...`). Fastest migration, but less control and often slower than the default PySpark
 DataFrame output. Reported: `to_pickle`/`style`/`eval`/`read_pickle`/`chunksize` (not supported: TODO),
-driver-side operations (`.values`, `to_numpy`, `iterrows`, `to_pandas`), `apply(axis=1)`, `np.where`,
+driver-side operations (`.values`, `to_numpy`, `iterrows`, `to_pandas`), `apply(axis=1)` (plain column-expression lambdas convert), `np.where`,
 `iloc`, directory-style writes. Adds `compute.ops_on_diff_frames` when frames are merged/concatenated.
 Works with `--target databricks`, `sparqix project` and `sparqix verify --mode pandas-api`; other
 languages are converted to PySpark DataFrames as usual (with a note). Not run against real Spark here.

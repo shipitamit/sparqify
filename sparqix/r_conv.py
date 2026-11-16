@@ -362,6 +362,32 @@ class Emitter:
         return f"F.lit({c})" if n[0] in ("str", "num") else c
 
     # ---- pipelines
+    SELECT_HELPERS = ("starts_with", "ends_with", "contains", "everything")
+
+    def _is_select_helper(self, x):
+        """tidyselect forms beyond plain column names: starts_with()/ends_with()/contains()/everything(), a:b ranges, c(...) groups, and -helper()"""
+        if x[0] == "un" and x[1] == "-":
+            return x[2][0] != "id" and self._is_select_helper(x[2]) or False
+        return (x[0] == "call" and (x[1] in self.SELECT_HELPERS or x[1] == "c" and any(self._is_select_helper(a[1]) for a in x[2]))) or (x[0] == "bin" and x[1] == ":")
+
+    def _select_names(self, x):
+        """Python expression (evaluated at run time over the DataFrame `_d`) for the list of column names a tidyselect item picks"""
+        from .core import Unsupported
+        if x[0] in ("id", "str"):
+            return f"[{x[1]!r}]"
+        if x[0] == "bin" and x[1] == ":" and x[2][0] in ("id", "str") and x[3][0] in ("id", "str"):
+            a, b = x[2][1], x[3][1]
+            return f"_d.columns[_d.columns.index({a!r}):_d.columns.index({b!r}) + 1]"
+        if x[0] == "call" and x[1] == "everything" and not x[2]:
+            return "list(_d.columns)"
+        if x[0] == "call" and x[1] in ("starts_with", "ends_with", "contains") and len(x[2]) == 1 and x[2][0][0] is None and x[2][0][1][0] == "str":
+            m = x[2][0][1][1]
+            cond = {"starts_with": "c.lower().startswith({0!r})", "ends_with": "c.lower().endswith({0!r})", "contains": "{0!r} in c.lower()"}[x[1]].format(m.lower())
+            return f"[c for c in _d.columns if {cond}]"                                       # tidyselect matches case-insensitively by default
+        if x[0] == "call" and x[1] == "c":
+            return "[*" + ", *".join(self._select_names(a[1]) for a in x[2]) + "]" if x[2] else "[]"
+        raise Unsupported(f"select item {x[0]}/{x[1] if len(x) > 1 else ''} is not converted - list the columns explicitly")
+
     def names(self, args):
         out = []
         for nm, x in args:
@@ -590,6 +616,20 @@ class Emitter:
             if pos:
                 raise Unsupported("mutate(across(...)) / unnamed mutate args")
             return out, keys
+        if name == "select" and any(self._is_select_helper(x) for nm, x in args):
+            if any(nm for nm, x in args):
+                raise Unsupported("select(): renaming (new = old) together with starts_with/ends_with/contains/everything/a:b is not converted - split it into select() and rename()")
+            pos, neg = [], []
+            for nm, x in args:
+                if x[0] == "un" and x[1] == "-":
+                    neg.append(self._select_names(x[2]))
+                else:
+                    pos.append(self._select_names(x))
+            keep = "[*" + ", *".join(pos) + "]" if pos else "list(_d.columns)"
+            keep = f"list(dict.fromkeys({keep}))"                        # tidyselect: in the order selected, each column once
+            if neg:
+                keep = f"[c for c in {keep} if c not in {{*{', *'.join(neg)}}}]"
+            return f"(lambda _d: _d.select(*{keep}))({code})", keys
         if name == "select":
             cols = []
             drop = []

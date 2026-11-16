@@ -3227,3 +3227,62 @@ def test_untranslated_datastage_derivation_is_a_string_column_not_void():
     p = os.path.join(HERE, "..", "examples", "job_orders.dsx")
     code, rep = convert(open(p).read(), "datastage", filename=p)
     assert "F.lit(None).cast('string').alias('weird')" in code and "TODO(sparqix): derivation weird" in code and rep.todos
+
+
+def test_pandas_apply_axis1_lambda_and_conditional_expression_become_columns():
+    src = ('import pandas as pd\ndf = pd.read_csv("s.csv")\n'
+           'df["t"] = df.apply(lambda r: r["a"] * r["b"], axis=1)\n'
+           'df["s"] = df.apply(lambda r: "big" if r["a"] > 5 else "small", axis=1)\n'
+           'df["l"] = df.apply(lambda r: r["c"].upper() + "-" + str(r["id"]), axis=1)\n'
+           'df["f"] = df.apply(lambda r: 1 if r["a"] > 3 and r["c"] == "x" else 0, axis=1)\n'
+           'df["g"] = df["a"].apply(lambda v: "hi" if v > 1 else "lo")\n')
+    code, rep = convert(src, "pandas")
+    assert "withColumn('t', F.col('a') * F.col('b'))" in code
+    assert "F.when((F.col('a') > 5), F.lit('big')).otherwise(F.lit('small'))" in code
+    assert "F.concat(F.concat(F.upper(F.col('c')), F.lit('-')), F.col('id').cast('string'))" in code
+    assert "F.when(((F.col('a') > 3) & (F.col('c') == 'x')), F.lit(1)).otherwise(F.lit(0))" in code
+    assert not rep.todos
+
+
+def test_pandas_apply_axis1_lambda_that_is_not_a_column_expression_stays_todo():
+    for lam in ("sum(r)", "foo(r)", "r.sum()", "[r['a'], r['b']]"):
+        _, rep = convert(f'import pandas as pd\ndf = pd.read_csv("s.csv")\ndf["x"] = df.apply(lambda r: {lam}, axis=1)\n', "pandas")
+        assert rep.todos, lam
+    # `and` / `or` on whole columns outside a row lambda is still the pandas error it always was
+    _, rep = convert('import pandas as pd\ndf = pd.read_csv("s.csv")\nx = df["a"] > 1 and df["b"] > 2\n', "pandas")
+    assert rep.todos
+
+
+def test_r_select_helpers_ranges_and_negation():
+    src = ('library(dplyr)\nd <- read.csv("s.csv")\n'
+           'a <- d %>% select(id, starts_with("am"), -ends_with("ty"))\n'
+           'b <- d %>% select(region:qty, -dt)\n'
+           'c2 <- d %>% select(-starts_with("c"), -id)\n'
+           'e <- d %>% select(contains("RE"), id)\n'
+           'f <- d %>% select(everything(), -customer)\n')
+    code, rep = convert(src, "r")
+    assert not rep.todos
+    assert "c.lower().startswith('am')" in code and "c.lower().endswith('ty')" in code and "'re' in c.lower()" in code
+    assert "_d.columns.index('region'):_d.columns.index('qty') + 1" in code
+    # run the generated selection logic over a fake DataFrame that only has .columns and .select
+    class FakeDF:
+        def __init__(self, cols):
+            self.columns = cols
+
+        def select(self, *c):
+            return FakeDF(list(c))
+    import re as _re
+    for var, cols, expect in (("a", ["id", "amount", "qty", "region"], ["id", "amount"]),
+                              ("b", ["id", "region", "dt", "amount", "qty", "customer"], ["region", "amount", "qty"]),
+                              ("c2", ["id", "region", "customer", "cat"], ["region"]),
+                              ("e", ["id", "Region", "amount", "store"], ["Region", "store", "id"]),
+                              ("f", ["id", "customer", "qty"], ["id", "qty"])):
+        line = next(l for l in code.splitlines() if l.startswith(var + " = "))
+        expr = line.split(" = ", 1)[1].rsplit("(d)", 1)[0]
+        got = eval(expr, {})(FakeDF(cols)).columns
+        assert got == expect, (var, got, expect)
+
+
+def test_r_select_rename_mixed_with_helper_stays_todo():
+    _, rep = convert('library(dplyr)\nd <- read.csv("s.csv")\na <- d %>% select(x = a, starts_with("b"))\n', "r")
+    assert rep.todos

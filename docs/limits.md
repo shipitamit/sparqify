@@ -24,10 +24,10 @@ sparqix is a **migration aid, not a guarantee**. Review every converted file bef
 - A match on sample data is evidence, not proof. Use data that covers your edge cases.
 
 ## Main gaps by language
-- **pandas:** `apply(axis=1)`, positional indexing, index semantics, `ewm`, time-based or centered rolling windows.
+- **pandas:** `apply(axis=1)` with a lambda that is not a plain column expression (plain ones, including `x if c else y`, `and`/`or`, `str()`/`int()`/`float()` and `.upper()`/`.lower()`/`.strip()`, convert), positional indexing, index semantics, `ewm`, time-based or centered rolling windows.
 - **SQL:** `ROWNUM` next to `GROUP BY`/`OR`/`UNION`, `ROWNUM > n`, `NULLS FIRST/LAST` in some aggregates, ClickHouse `LIMIT n BY`, Informix/Firebird `SKIP`.
 - **SQL dialects:** 19 of the 40 are aliases that reuse another dialect's rules (MariaDB uses MySQL, Greenplum uses PostgreSQL, and so on). Dialect-specific features may be missed; a note in the report says which family was used.
-- **R:** selection helpers such as `starts_with`, `-col` and `a:c`; several `names_from` columns in `pivot_wider`.
+- **R:** selection helpers inside `pivot_longer`/`pivot_wider` (they work in `select()`), `matches()`/`last_col()`/`where()`, several `names_from` columns in `pivot_wider`.
 - **SAS:** `LAG` inside `IF`, `DO`/`OUTPUT` loops, input pointers, run-time-dependent macros.
 - **Excel:** `HLOOKUP`, `MATCH` alone, `INDEX` by row number, `XLOOKUP` match modes.
 - **Scala/Java:** `sortWith`, `partition`, `minBy/maxBy`, for-comprehensions, `partitioningBy`, stream variables kept across statements.
