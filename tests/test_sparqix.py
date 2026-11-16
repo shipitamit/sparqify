@@ -3442,3 +3442,37 @@ def test_k8s_manifests_wire_the_per_user_options():
     assert not re.search(r"(?m)^\s+- \{name: SPARQIX_USERS_FILE", dep)                           # off by default: a configured but missing file stops the server
     oidc = open(os.path.join(k8s, "ingress-oidc.example.yaml")).read()
     assert "auth-response-headers" in oidc and "X-Sparqix-Proxy-Secret" in oidc and "X-Auth-Request-Email" in oidc
+
+
+def test_supply_chain_files_are_in_place_and_the_image_pin_script_works(tmp_path):
+    import shutil
+    import subprocess
+    root = os.path.join(HERE, "..")
+    dep = open(os.path.join(root, ".github", "dependabot.yml")).read()
+    assert "github-actions" in dep and dep.count("package-ecosystem: docker") == 2
+    log = open(os.path.join(root, "CHANGELOG.md")).read()
+    ver = re.search(r'^version = "([^"]+)"', open(os.path.join(root, "pyproject.toml")).read(), re.M).group(1)
+    assert f"## [{ver.split('.dev')[0]}]" in log and "Changelog =" in open(os.path.join(root, "pyproject.toml")).read()
+    bash = shutil.which("bash")
+    if not bash:
+        pytest.skip("bash not available")
+    for s in ("pin_actions.sh", "pin_images.sh"):
+        assert subprocess.run([bash, "-n", os.path.join(root, "scripts", s)]).returncode == 0
+    # run pin_images.sh against copies of the Dockerfiles with a fake `docker` that returns a fixed digest
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "deploy" / "sandbox").mkdir(parents=True)
+    (tmp_path / "bin").mkdir()
+    shutil.copy(os.path.join(root, "scripts", "pin_images.sh"), tmp_path / "scripts")
+    shutil.copy(os.path.join(root, "Dockerfile"), tmp_path / "Dockerfile")
+    shutil.copy(os.path.join(root, "deploy", "sandbox", "Dockerfile"), tmp_path / "deploy" / "sandbox" / "Dockerfile")
+    digest = "sha256:" + "ab" * 32
+    fake = tmp_path / "bin" / "docker"
+    fake.write_text(f"#!/bin/sh\necho {digest}\n")
+    fake.chmod(0o755)
+    env = dict(os.environ, PATH=f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
+    for _ in range(2):                                                                   # the second run must change nothing (idempotent)
+        assert subprocess.run([bash, str(tmp_path / "scripts" / "pin_images.sh")], env=env, capture_output=True).returncode == 0
+    for f in (tmp_path / "Dockerfile", tmp_path / "deploy" / "sandbox" / "Dockerfile"):
+        froms = [l for l in f.read_text().splitlines() if l.startswith("FROM ")]
+        assert froms and all(l.split()[1] == f"python:3.12-slim@{digest}" for l in froms), froms
+    assert "AS build" in (tmp_path / "Dockerfile").read_text()                           # the stage name survives

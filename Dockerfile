@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
 # Stdlib-only app: no third-party packages, so the image is small and has little to patch.
-FROM python:3.12-slim AS build
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS build
 WORKDIR /src
 COPY pyproject.toml README.md ./
 COPY sparqix ./sparqix
 RUN pip install --no-cache-dir --prefix=/install .
 
-FROM python:3.12-slim
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=random
 # Pull in Debian security fixes published after the base image was built (e.g. the zlib1g HIGH CVEs the CI scan flagged)
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && rm -rf /var/lib/apt/lists/*

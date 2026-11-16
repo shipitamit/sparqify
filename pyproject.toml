@@ -29,6 +29,7 @@ Homepage = "https://github.com/shipitamit/sparqix"
 Source = "https://github.com/shipitamit/sparqix"
 Issues = "https://github.com/shipitamit/sparqix/issues"
 Documentation = "https://github.com/shipitamit/sparqix/blob/main/docs/limits.md"
+Changelog = "https://github.com/shipitamit/sparqix/blob/main/CHANGELOG.md"
 
 [project.scripts]
 sparqix = "sparqix.cli:main"

@@ -1,0 +1,14 @@
+# Keeps the pinned GitHub Actions (full commit SHAs) and the Docker base images (digests) current: one pull request per update, reviewed like any change.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: {interval: weekly}
+    groups:
+      actions: {patterns: ["*"]}
+  - package-ecosystem: docker
+    directory: /
+    schedule: {interval: weekly}
+  - package-ecosystem: docker
+    directory: /deploy/sandbox
+    schedule: {interval: weekly}
