@@ -19,7 +19,7 @@ jobs:
       contents: read
     steps:
       # Run scripts/pin_actions.sh once to replace these version tags with full commit SHAs.
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
       - name: Build image (not pushed)
         run: docker build -t sparqify:ci .
@@ -47,7 +47,7 @@ jobs:
           skip-version-check: true
       - name: Keep the scan report as a build artifact
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with: {name: trivy-sarif, path: trivy.sarif, if-no-files-found: ignore}
       - name: Image runs as non-root and serves probes
         run: |
@@ -69,9 +69,9 @@ jobs:
       packages: write
       id-token: write           # keyless signing
     steps:
-      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with: {persist-credentials: false}
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with: {registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}"}
       - name: Image name and tags (both v0.1.0 and 0.1.0, because the Kubernetes manifests use the tag without the v)
         id: meta
@@ -86,7 +86,7 @@ jobs:
             echo "$repo:${REF#v}"
             echo "EOT"
           } >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         id: push
         with:
           context: .
@@ -94,6 +94,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           provenance: true
           sbom: true
-      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
       - name: Sign the image by digest
         run: cosign sign --yes "${{ steps.meta.outputs.image }}@${{ steps.push.outputs.digest }}"
