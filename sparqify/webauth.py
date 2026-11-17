@@ -6,6 +6,13 @@ Three ways to tell users apart, all optional and usable together:
   * a user name sent by a trusted reverse proxy that already signed the user in (oauth2-proxy, an OIDC ingress, ...): `--auth-header`, which is only honoured
     together with a proxy secret the proxy adds to every request, so a client that reaches the pod directly cannot claim to be somebody
 The identity goes into the access log, and drives per-user rate limits and a daily cap on AI calls.
+
+Roles (who may do what):
+  admin   everything, including /metrics
+  user    convert, project, orchestrate and the AI features (the default, and what everybody could do before roles existed)
+  viewer  read-only: may convert and compare, may not use the AI features (they spend your API key); no /metrics
+A users-file line may end with the role: `name:sha256:<hash>:viewer`. The shared token is an admin (it always could do everything).
+Names that arrive from a trusted proxy are `user` unless listed in --admins / --viewers (or the default role is changed).
 """
 from __future__ import annotations
 
@@ -21,6 +28,13 @@ from collections import deque
 NAME_RE = re.compile(r"^[A-Za-z0-9._@+-]{1,64}$")            # users file names
 HEADER_NAME_RE = re.compile(r"^[A-Za-z0-9._@+-]{1,128}$")    # names taken from a proxy header (an e-mail address is the usual value)
 SHARED = "shared"
+ROLES = ("admin", "user", "viewer")
+DEFAULT_ROLE = "user"
+PERMS = {"admin": frozenset({"convert", "ai", "metrics"}), "user": frozenset({"convert", "ai"}), "viewer": frozenset({"convert"})}
+
+
+def can(role: str, perm: str) -> bool:
+    return perm in PERMS.get(role, frozenset())
 
 
 class UsersFileError(ValueError):
@@ -31,38 +45,46 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def new_user_line(name: str):
+def new_user_line(name: str, role: str = DEFAULT_ROLE):
     """(token, users-file line) for a new user: the token is shown once, the line (which only has its hash) goes into the users file"""
     if not NAME_RE.match(name or ""):
         raise UsersFileError("a user name is 1 to 64 characters from A-Z a-z 0-9 . _ @ + -")
+    if role not in ROLES:
+        raise UsersFileError("a role is one of: " + ", ".join(ROLES))
     token = secrets.token_urlsafe(24)
-    return token, f"{name}:sha256:{hash_token(token)}"
+    return token, f"{name}:sha256:{hash_token(token)}:{role}"
 
 
-def parse_users(text: str) -> dict:
-    """{name: sha256 hex digest}. Raises UsersFileError naming the line numbers (never the line contents: they may be near-secrets)."""
+def parse_users_with_roles(text: str) -> dict:
+    """{name: (sha256 hex digest, role)}. Raises UsersFileError naming the line numbers (never the line contents: they may be near-secrets)."""
     users, bad = {}, []
     for i, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
         parts = line.split(":")
-        if len(parts) != 3 or parts[1] != "sha256" or not NAME_RE.match(parts[0]) or not re.fullmatch(r"[0-9a-fA-F]{64}", parts[2]) \
-                or parts[0].lower() == SHARED or parts[0] in users:
+        role = parts[3] if len(parts) == 4 else DEFAULT_ROLE
+        if len(parts) not in (3, 4) or parts[1] != "sha256" or not NAME_RE.match(parts[0]) or not re.fullmatch(r"[0-9a-fA-F]{64}", parts[2]) \
+                or role not in ROLES or parts[0].lower() == SHARED or parts[0] in users:
             bad.append(i)
             continue
-        users[parts[0]] = parts[2].lower()
+        users[parts[0]] = (parts[2].lower(), role)
     if bad:
         raise UsersFileError("users file: invalid or duplicate entries on line(s) " + ", ".join(map(str, bad[:10]))
-                             + " (expected `name:sha256:<64 hex digits>`; create lines with `sparqify users add NAME`)")
+                             + " (expected `name:sha256:<64 hex digits>` or `name:sha256:<64 hex digits>:<admin|user|viewer>`; create lines with `sparqify users add NAME`)")
     return users
+
+
+def parse_users(text: str) -> dict:
+    """{name: sha256 hex digest}"""
+    return {n: h for n, (h, _r) in parse_users_with_roles(text).items()}
 
 
 class UserStore:
     """the users file, re-read when its modification time changes (a Kubernetes Secret mounted as a file is updated in place)"""
 
     def __init__(self, path: str | None):
-        self.path, self._mtime, self._users, self._lock = path, None, {}, threading.Lock()
+        self.path, self._mtime, self._users, self._lock = path, None, {}, threading.Lock()      # _users: name -> (digest, role)
         if path:
             self._load(strict=True)
 
@@ -70,7 +92,7 @@ class UserStore:
         try:
             st = os.stat(self.path)
             with open(self.path, encoding="utf-8") as fh:
-                users = parse_users(fh.read())
+                users = parse_users_with_roles(fh.read())
         except (OSError, UsersFileError):
             if strict:
                 raise
@@ -88,16 +110,20 @@ class UserStore:
         with self._lock:
             return self._users
 
-    def find(self, token: str):
-        """name of the user owning `token`, or None. Compares digests in constant time against every entry."""
+    def lookup(self, token: str):
+        """(name, role) of the user owning `token`, or None. Compares digests in constant time against every entry."""
         if not token:
             return None
         digest = hash_token(token)
         found = None
-        for name, h in self.users().items():
+        for name, (h, role) in self.users().items():
             if hmac.compare_digest(digest, h):
-                found = name
+                found = (name, role)
         return found
+
+    def find(self, token: str):
+        got = self.lookup(token)
+        return got[0] if got else None
 
     def __bool__(self):
         return bool(self.path)
@@ -153,6 +179,7 @@ def users_main(argv) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     a = sub.add_parser("add", help="create a user and a token")
     a.add_argument("name")
+    a.add_argument("--role", choices=ROLES, default=DEFAULT_ROLE, help="admin (everything, /metrics), user (default: convert and AI), viewer (read-only: no AI)")
     a.add_argument("--file", help="append the user's line to this users file (created with owner-only permissions); without it the line is only printed")
     args = p.parse_args(argv)
     try:
@@ -161,7 +188,7 @@ def users_main(argv) -> int:
                 if args.name in parse_users(fh.read()):
                     print(f"user {args.name!r} already exists in {args.file}", file=sys.stderr)
                     return 2
-        token, line = new_user_line(args.name)
+        token, line = new_user_line(args.name, args.role)
     except (UsersFileError, OSError) as e:
         print(str(e), file=sys.stderr)
         return 2
@@ -169,7 +196,7 @@ def users_main(argv) -> int:
         fd = os.open(args.file, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
-        print(f"added {args.name} to {args.file}")
+        print(f"added {args.name} ({args.role}) to {args.file}")
     else:
         print("add this line to your users file:\n  " + line)
     print(f"\ntoken for {args.name} (shown once, not stored anywhere in clear):\n  {token}\nopen the UI with  ?token=<token>")

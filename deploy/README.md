@@ -45,6 +45,17 @@ Give each person their token; they open `https://<host>/?token=<their token>`. T
 **Single sign-on.** Put an OIDC proxy (oauth2-proxy) in front and let sparqify read the verified e-mail from a header: see `deploy/k8s/ingress-oidc.example.yaml`.
 sparqify only trusts that header when the request carries the proxy secret too (`SPARQIFY_PROXY_SECRET`, at least 16 characters), and only with `SPARQIFY_TRUSTED_PROXIES=1` or more.
 
+**Roles.** Everybody is a `user` by default (convert, project, orchestrate and the AI features), which is what people could do before roles existed.
+`admin` also may read `/metrics`; `viewer` is read-only: they can convert and compare, but the AI features, which spend your API key, are switched off for them
+(a dry run that sends nothing still works), and they cannot read `/metrics`. Set a role when you create the user, or change it by editing the line:
+
+    sparqify users add carol --role viewer --file users        # line: carol:sha256:<hash>:viewer
+    sparqify users add dave  --role admin  --file users
+
+With single sign-on, a name that arrives from the proxy is a `user` unless it is listed in `SPARQIFY_ADMINS` or `SPARQIFY_VIEWERS` (comma-separated, compared
+without regard to case; in both lists the viewer role wins). `SPARQIFY_DEFAULT_ROLE=viewer` makes everybody else read-only until you name them. The shared
+token is an admin, because it always could do everything and Prometheus scrapes `/metrics` with it. Without any sign-in (local use) everybody is an admin.
+
 Either way, `SPARQIFY_USER_RPM` (conversions per user per minute) and `SPARQIFY_AI_DAILY_LIMIT` (AI requests per user per day) apply per person. They are counted per pod.
 
 ## What the manifests set up

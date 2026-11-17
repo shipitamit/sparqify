@@ -334,7 +334,7 @@ def _throttled(ip: str, record: bool = False) -> bool:
 
 
 _stats_lock = threading.Lock()
-_stats = {"requests": {}, "conversions": {"ok": 0, "error": 0, "timeout": 0}, "throttled": 0, "in_flight": 0}
+_stats = {"requests": {}, "conversions": {"ok": 0, "error": 0, "timeout": 0}, "throttled": 0, "forbidden": 0, "in_flight": 0}
 
 
 def _count(group: str, key: str, n: int = 1) -> None:
@@ -346,12 +346,13 @@ def _metrics_text() -> str:
     """Prometheus text format: counters only, no labels that come from input"""
     with _stats_lock:
         reqs, conv = dict(_stats["requests"]), dict(_stats["conversions"])
-        thr, fly = _stats["throttled"], _stats["in_flight"]
+        thr, fly, forb = _stats["throttled"], _stats["in_flight"], _stats["forbidden"]
     out = ["# TYPE sparqify_http_requests_total counter"]
     out += [f'sparqify_http_requests_total{{code="{int(c)}"}} {n}' for c, n in sorted(reqs.items())]
     out += ["# TYPE sparqify_conversions_total counter"]
     out += [f'sparqify_conversions_total{{result="{r}"}} {n}' for r, n in sorted(conv.items())]
     out += ["# TYPE sparqify_throttled_total counter", f"sparqify_throttled_total {thr}",
+            "# TYPE sparqify_forbidden_total counter", f"sparqify_forbidden_total {forb}",
             "# TYPE sparqify_conversions_in_flight gauge", f"sparqify_conversions_in_flight {fly}",
             "# TYPE sparqify_max_concurrent gauge", f"sparqify_max_concurrent {MAX_CONCURRENT}", ""]
     return "\n".join(out)
@@ -385,7 +386,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         import time
         t0 = getattr(self, "_t0", None)
-        rec = {"ts": round(time.time(), 3), "ip": self._client_ip(), "user": getattr(self, "_user", None), "method": self.command, "path": (self.path or "").split("?")[0][:200],
+        rec = {"ts": round(time.time(), 3), "ip": self._client_ip(), "user": getattr(self, "_user", None), "role": getattr(self, "_role", None), "method": self.command, "path": (self.path or "").split("?")[0][:200],
                "status": int(code) if str(code).isdigit() else 0, "ms": int((time.monotonic() - t0) * 1000) if t0 else None}
         sys.stderr.write(json.dumps(rec) + "\n")
 
@@ -435,7 +436,7 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- request checks ---------------------------------------------------------------------------
     def _authenticate(self, query_token: str = ""):
-        """(user, method) for this request, or None. Order: a user name from the trusted proxy (needs the proxy secret), a per-user token,
+        """(user, method, role) for this request, or None. Order: a user name from the trusted proxy (needs the proxy secret), a per-user token,
         the shared token. The token comes from X-Sparqify-Token, `Authorization: Bearer`, or (page load only) the ?token= query."""
         from . import webauth as W
         srv = self.server
@@ -444,17 +445,19 @@ class Handler(BaseHTTPRequestHandler):
             if sec and hmac.compare_digest(sec.encode(), srv.proxy_secret.encode()):
                 who = (self.headers.get(srv.auth_header) or "").strip()
                 if W.HEADER_NAME_RE.match(who):
-                    return who, "proxy"
+                    key = who.lower()
+                    role = "viewer" if key in srv.viewers else "admin" if key in srv.admins else srv.default_role       # both lists: the lower role wins
+                    return who, "proxy", role
         given = self.headers.get("X-Sparqify-Token") or ""
         if not given and (self.headers.get("Authorization") or "").lower().startswith("bearer "):       # lets Prometheus scrape /metrics
             given = self.headers["Authorization"][7:].strip()
         given = given or query_token
         if given:
-            user = srv.users.find(given) if srv.users else None
-            if user:
-                return user, "token"
+            found = srv.users.lookup(given) if srv.users else None
+            if found:
+                return found[0], "token", found[1]
             if srv.token and hmac.compare_digest(given.encode(), srv.token.encode()):
-                return W.SHARED, "shared-token"
+                return W.SHARED, "shared-token", "admin"          # the shared token could always do everything (and lets Prometheus scrape /metrics)
         return None
 
     def _require_login(self, query_token: str = "", page: bool = False) -> bool:
@@ -471,8 +474,19 @@ class Handler(BaseHTTPRequestHandler):
             self._err(401, "sign in required (or send a valid access token)" if self.server.auth_header
                       else "open the URL printed by `sparqify serve` (it contains the access token)" if page else "missing or wrong access token")
             return False
-        self._user, self._auth = who
+        self._user, self._auth, self._role = who
         return True
+
+    def _allowed(self, perm: str) -> bool:
+        """role check: without sign-in (local use) everybody is an admin; otherwise the role from _authenticate decides. Sends 403 when refused."""
+        from . import webauth as W
+        role = getattr(self, "_role", "admin")
+        if W.can(role, perm):
+            return True
+        with _stats_lock:
+            _stats["forbidden"] += 1
+        self._err(403, f"your role ({role}) cannot do that: " + ("the AI features are off for read-only users" if perm == "ai" else "admins only"))
+        return False
 
     def _guard(self, post: bool, api: bool):
         """Host allow-list (DNS rebinding), same-origin + JSON content type (CSRF), optional token. Returns True when allowed."""
@@ -504,6 +518,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guard(False, api=path.startswith("/api/") or path == "/metrics"):
             return
         if path == "/metrics":
+            if not self._allowed("metrics"):
+                return
             return self._send(200, _metrics_text(), "text/plain")
         if path in ("/", "/index.html"):
             from urllib.parse import parse_qs
@@ -518,7 +534,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/ui.js":
             return self._send(200, UI_JS, "application/javascript")
         if path == "/api/whoami":
-            return self._send(200, json.dumps({"user": getattr(self, "_user", None), "auth": getattr(self, "_auth", "none")}))
+            from . import webauth as W
+            role = getattr(self, "_role", "admin")
+            return self._send(200, json.dumps({"user": getattr(self, "_user", None), "auth": getattr(self, "_auth", "none"), "role": role,
+                                               "can": {p: W.can(role, p) for p in ("ai", "metrics")}}))
         if path == "/api/examples":
             return self._send(200, json.dumps(list_examples("orch" if "kind=orch" in query else "convert")))
         if path == "/api/example":
@@ -556,7 +575,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self.server.user_limit.hit(key):
             return self._err(429, "rate limit: too many requests, wait a moment")
         ai = d.get("ai") if isinstance(d.get("ai"), dict) else {}
-        if (path == "/api/agent" or (ai.get("enabled") and not ai.get("dry_run"))) and not self.server.ai_cap.hit(key):
+        uses_ai = path == "/api/agent" or bool(ai.get("enabled") and not ai.get("dry_run"))
+        if uses_ai and not self._allowed("ai"):
+            return
+        if uses_ai and not self.server.ai_cap.hit(key):
             return self._err(429, "daily limit for AI requests reached")
         if not _busy.acquire(blocking=False):
             return self._err(503, "server busy: try again in a moment")
@@ -593,6 +615,9 @@ class _Server(ThreadingHTTPServer):
     auth_header = None
     proxy_secret = None
     auth_enabled = False
+    admins = frozenset()
+    viewers = frozenset()
+    default_role = "user"
 
     def __init__(self, *a, **k):
         from . import webauth as W
@@ -603,12 +628,17 @@ class _Server(ThreadingHTTPServer):
 
 
 def make_server(host="127.0.0.1", port=8765, token=None, allowed_hosts=(), trusted_proxies=0, access_log=False,
-                users_file=None, auth_header=None, proxy_secret=None, user_rpm=0, ai_daily_limit=0):
+                users_file=None, auth_header=None, proxy_secret=None, user_rpm=0, ai_daily_limit=0, admins=(), viewers=(), default_role="user"):
     from . import webauth as W
     users = W.UserStore(users_file)                      # raises UsersFileError before anything is bound
     if auth_header and (not proxy_secret or len(proxy_secret) < 16 or int(trusted_proxies or 0) < 1 or not W.HEADER_NAME_RE.match(auth_header.replace("-", "_"))):
         raise W.UsersFileError("--auth-header needs --proxy-secret (at least 16 characters, sent by the proxy as X-Sparqify-Proxy-Secret), --trusted-proxies 1 or more, and a plain header name")
+    if default_role not in ("user", "viewer"):
+        raise W.UsersFileError("--default-role is user or viewer (an admin has to be named)")
     srv = _Server((host, port), Handler)
+    srv.admins = frozenset(a.strip().lower() for a in admins if a and a.strip())
+    srv.viewers = frozenset(v.strip().lower() for v in viewers if v and v.strip())
+    srv.default_role = default_role
     srv.users = users
     srv.auth_header = auth_header or None
     srv.proxy_secret = proxy_secret if auth_header else None
@@ -647,6 +677,12 @@ def main(argv) -> int:
                    help="most conversion requests per user (per client address without sign-in) per minute; 0 = no limit; or SPARQIFY_USER_RPM")
     p.add_argument("--ai-daily-limit", type=int, default=_env_int("SPARQIFY_AI_DAILY_LIMIT", 0, 0, 1000000),
                    help="most AI requests per user per day (UTC), counted per pod; 0 = no limit; or SPARQIFY_AI_DAILY_LIMIT")
+    p.add_argument("--admins", default=os.environ.get("SPARQIFY_ADMINS", ""),
+                   help="comma-separated names (as sent by the proxy in --auth-header) that are admins; or SPARQIFY_ADMINS")
+    p.add_argument("--viewers", default=os.environ.get("SPARQIFY_VIEWERS", ""),
+                   help="comma-separated names that are read-only viewers (no AI features); if a name is in both lists the viewer role wins; or SPARQIFY_VIEWERS")
+    p.add_argument("--default-role", choices=["user", "viewer"], default=os.environ.get("SPARQIFY_DEFAULT_ROLE", "user"),
+                   help="role of a proxy-signed-in name that is in neither list: user (default) or viewer; or SPARQIFY_DEFAULT_ROLE")
     p.add_argument("--open", action="store_true", help="open the page in a browser")
     a = p.parse_args(argv)
     a.allowed_host += [h for h in os.environ.get("SPARQIFY_ALLOWED_HOSTS", "").split(",") if h.strip()]
@@ -659,7 +695,8 @@ def main(argv) -> int:
     from . import webauth as W
     try:
         srv = make_server(a.host, a.port, token, a.allowed_host, a.trusted_proxies, a.access_log,
-                          a.users_file, a.auth_header, a.proxy_secret, a.user_rpm, a.ai_daily_limit)
+                          a.users_file, a.auth_header, a.proxy_secret, a.user_rpm, a.ai_daily_limit,
+                          a.admins.split(","), a.viewers.split(","), a.default_role)
     except (W.UsersFileError, OSError) as e:
         print(f"sparqify serve: {e}", file=sys.stderr)
         return 2
@@ -790,7 +827,176 @@ UI_JS = r"""
     for (var i = 0; i < bytes.length; i += CH) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + CH));
     return btoa(bin);
   }
-  root.SparkUI = { crc32: crc32, makeZip: makeZip, highlight: highlight, b64urlEncode: b64urlEncode, b64urlDecode: b64urlDecode, findTodoLine: findTodoLine, bytesToB64: bytesToB64, esc: esc };
+  /* ---- line diff (side by side). Never touches the DOM: it returns rows, the page renders them with textContent. */
+  function splitLines(s) {
+    s = String(s === undefined || s === null ? '' : s);
+    if (s === '') return [];
+    var l = s.split('\n');
+    if (l[l.length - 1] === '') l.pop();
+    return l.map(function (x) { return x.replace(/\r$/, ''); });
+  }
+  /* lineDiff(a, b, {ignoreWs, maxCells}) -> {rows, added, removed, same, approx}
+     row: {k: 'eq'|'chg'|'del'|'add', ln, l, rn, r}  (ln/rn are 1-based line numbers, 0 and null when that side has no line) */
+  function lineDiff(a, b, opt) {
+    opt = opt || {};
+    var A = Array.isArray(a) ? a : splitLines(a), B = Array.isArray(b) ? b : splitLines(b);
+    var norm = opt.ignoreWs ? function (x) { return x.replace(/\s+/g, ' ').trim(); } : function (x) { return x; };
+    var NA = A.map(norm), NB = B.map(norm), pre = 0, i, j, k;
+    while (pre < NA.length && pre < NB.length && NA[pre] === NB[pre]) pre++;
+    var ea = NA.length, eb = NB.length;
+    while (ea > pre && eb > pre && NA[ea - 1] === NB[eb - 1]) { ea--; eb--; }
+    var ops = [], n = ea - pre, m = eb - pre, approx = false, maxCells = opt.maxCells || 4000000;
+    for (i = 0; i < pre; i++) ops.push(['e', i, i]);
+    if (n * m > maxCells) {                         /* too big for the exact table: show the middle as one replaced block */
+      approx = true;
+      for (i = pre; i < ea; i++) ops.push(['d', i, -1]);
+      for (j = pre; j < eb; j++) ops.push(['a', -1, j]);
+    } else if (n > 0 || m > 0) {
+      var W = m + 1, T = new Uint32Array((n + 1) * W);
+      for (i = n - 1; i >= 0; i--) for (j = m - 1; j >= 0; j--)
+        T[i * W + j] = NA[pre + i] === NB[pre + j] ? T[(i + 1) * W + j + 1] + 1 : Math.max(T[(i + 1) * W + j], T[i * W + j + 1]);
+      i = 0; j = 0;
+      while (i < n && j < m) {
+        if (NA[pre + i] === NB[pre + j]) { ops.push(['e', pre + i, pre + j]); i++; j++; }
+        else if (T[(i + 1) * W + j] >= T[i * W + j + 1]) { ops.push(['d', pre + i, -1]); i++; }
+        else { ops.push(['a', -1, pre + j]); j++; }
+      }
+      while (i < n) { ops.push(['d', pre + i, -1]); i++; }
+      while (j < m) { ops.push(['a', -1, pre + j]); j++; }
+    }
+    for (k = 0; k < NA.length - ea; k++) ops.push(['e', ea + k, eb + k]);
+    var rows = [], added = 0, removed = 0, dels = [], adds = [];
+    function flush() {                              /* a block between two equal lines: pair deletions with additions row by row */
+      var len = Math.max(dels.length, adds.length);
+      for (var q = 0; q < len; q++) {
+        var li = q < dels.length ? dels[q] : -1, ri = q < adds.length ? adds[q] : -1;
+        rows.push({ k: li >= 0 && ri >= 0 ? 'chg' : li >= 0 ? 'del' : 'add', ln: li >= 0 ? li + 1 : 0, l: li >= 0 ? A[li] : null, rn: ri >= 0 ? ri + 1 : 0, r: ri >= 0 ? B[ri] : null });
+      }
+      removed += dels.length; added += adds.length; dels = []; adds = [];
+    }
+    ops.forEach(function (o) {
+      if (o[0] === 'e') { flush(); rows.push({ k: 'eq', ln: o[1] + 1, l: A[o[1]], rn: o[2] + 1, r: B[o[2]] }); }
+      else if (o[0] === 'd') dels.push(o[1]);
+      else adds.push(o[2]);
+    });
+    flush();
+    return { rows: rows, added: added, removed: removed, same: added === 0 && removed === 0, approx: approx };
+  }
+  /* hide long runs of unchanged rows: keep `ctx` rows around every change, replace the rest by {k:'skip', n, rows} */
+  function collapse(rows, ctx) {
+    ctx = ctx === undefined ? 3 : ctx;
+    var keep = new Array(rows.length), i, d;
+    for (i = 0; i < rows.length; i++) keep[i] = false;
+    for (i = 0; i < rows.length; i++) if (rows[i].k !== 'eq') for (d = -ctx; d <= ctx; d++) if (i + d >= 0 && i + d < rows.length) keep[i + d] = true;
+    var out = [], run = [];
+    function flushRun() { if (run.length) { out.push({ k: 'skip', n: run.length, rows: run }); run = []; } }
+    for (i = 0; i < rows.length; i++) { if (keep[i]) { flushRun(); out.push(rows[i]); } else run.push(rows[i]); }
+    flushRun();
+    return out;
+  }
+  /* wordDiff(a, b) -> {l: [{t, x}], r: [{t, x}]} or null: the pieces of two changed lines, x = true where the text differs.
+     null when the lines have little in common (then the whole line is already marked) */
+  function wordDiff(a, b) {
+    var re = /\s+|\w+|[^\w\s]/g, A = String(a).match(re) || [], B = String(b).match(re) || [];
+    var d = lineDiff(A, B, { maxCells: 160000 }), l = [], r = [], same = 0, total = Math.max(A.length, B.length) || 1;
+    function push(list, t, x) { if (list.length && list[list.length - 1].x === x) list[list.length - 1].t += t; else list.push({ t: t, x: x }); }
+    d.rows.forEach(function (row) {
+      if (row.k === 'eq') { push(l, row.l, false); push(r, row.r, false); same++; }
+      else { if (row.l !== null) push(l, row.l, true); if (row.r !== null) push(r, row.r, true); }
+    });
+    return same / total < 0.3 ? null : { l: l, r: r };
+  }
+  /* renderDiff(document, box, result, {leftTitle, rightTitle, ignoreWs}): builds a two-column table with createElement/textContent ONLY.
+     The compared text is the user's own input and output: it must never be parsed as HTML, so no innerHTML anywhere in here. */
+  function renderDiff(doc, box, res, o) {
+    o = o || {};
+    box.textContent = '';
+    box.style.display = 'block';
+    function el(tag, cls, text) { var e = doc.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; }
+    var head = el('div', 'dh');
+    head.appendChild(el('b', '', (o.leftTitle || 'Before') + '  →  ' + (o.rightTitle || 'After')));
+    head.appendChild(el('span', 'badge', res.same ? 'identical' : '+' + res.added + ' / −' + res.removed));
+    if (res.approx) head.appendChild(el('span', 'badge', 'very large: shown as one replaced block'));
+    var close = el('button', 'sec', 'Close');
+    close.onclick = function () { box.textContent = ''; box.style.display = 'none'; };
+    head.appendChild(close);
+    box.appendChild(head);
+    if (res.same) { box.appendChild(el('div', 'dnone', o.ignoreWs ? 'No differences (ignoring whitespace).' : 'No differences.')); return; }
+    var LIMIT = 5000, shown = 0, rows = collapse(res.rows, 3);
+    var wrap = el('div', 'dwrap'), tbl = el('table', 'dt'), tb = el('tbody');
+    function cell(side, text, parts) {
+      var td = el('td', 'tx ' + side + (text === null ? ' empty' : ''));
+      if (parts) parts.forEach(function (p) { td.appendChild(el('span', p.x ? 'dx' : '', p.t)); });
+      else td.textContent = text === null ? '' : text;
+      return td;
+    }
+    function rowEl(r) {
+      var tr = el('tr', 'd-' + r.k), w = r.k === 'chg' ? wordDiff(r.l, r.r) : null;      /* inside a changed line, mark the words that differ */
+      tr.appendChild(el('td', 'no', r.ln ? String(r.ln) : ''));
+      tr.appendChild(cell('l', r.l, w && w.l));
+      tr.appendChild(el('td', 'no', r.rn ? String(r.rn) : ''));
+      tr.appendChild(cell('r', r.r, w && w.r));
+      return tr;
+    }
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (r.k === 'skip') {
+        var tr = el('tr', 'dskip'), td = el('td', '', '⋯ ' + r.n + ' unchanged line' + (r.n === 1 ? '' : 's') + ' (click to show)');
+        td.colSpan = 4;
+        tr.appendChild(td);
+        (function (skipRow, hidden) {
+          skipRow.onclick = function () { hidden.forEach(function (x) { tb.insertBefore(rowEl(x), skipRow); }); tb.removeChild(skipRow); };
+        })(tr, r.rows);
+        tb.appendChild(tr);
+      } else {
+        if (shown >= LIMIT) { var more = el('tr', 'dskip'), mt = el('td', '', 'Only the first ' + LIMIT + ' rows are shown.'); mt.colSpan = 4; more.appendChild(mt); tb.appendChild(more); break; }
+        tb.appendChild(rowEl(r));
+        shown++;
+      }
+    }
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    box.appendChild(wrap);
+  }
+  /* ---- conversion history kept in the browser (opt-in; `store` is localStorage or anything with getItem/setItem/removeItem) */
+  var HIST_KEY = 'sparqify.history', HIST_ON = 'sparqify.history.on', HIST_MAX = 30, HIST_BYTES = 1500000, HIST_ENTRY = 300000;
+  function histValid(e) {
+    return e && typeof e === 'object' && typeof e.id === 'string' && typeof e.t === 'number' && typeof e.src === 'string' && typeof e.out === 'string' &&
+      typeof e.lang === 'string' && typeof e.todos === 'number';
+  }
+  function histLoad(store) {
+    try { var v = JSON.parse(store.getItem(HIST_KEY) || '[]'); return Array.isArray(v) ? v.filter(histValid) : []; } catch (e) { return []; }
+  }
+  function histWrite(store, list) { try { store.setItem(HIST_KEY, JSON.stringify(list)); return true; } catch (e) { return false; } }
+  function histBytes(list) { return list.reduce(function (a, e) { return a + e.src.length + e.out.length + 120; }, 0); }
+  /* newest first. Returns {saved, reason, count}. Entries over HIST_ENTRY characters are not kept; the oldest entries go first when a cap is hit. */
+  function histAdd(store, e, limits) {
+    limits = limits || {};
+    var max = limits.max || HIST_MAX, maxBytes = limits.maxBytes || HIST_BYTES, maxEntry = limits.maxEntry || HIST_ENTRY;
+    if (!histValid(e)) return { saved: false, reason: 'invalid', count: histLoad(store).length };
+    if (e.src.length + e.out.length > maxEntry) return { saved: false, reason: 'too-large', count: histLoad(store).length };
+    var list = histLoad(store).filter(function (x) { return !(x.src === e.src && x.out === e.out); });    /* the same conversion again moves to the top */
+    list.unshift(e);
+    while (list.length > max || (list.length > 1 && histBytes(list) > maxBytes)) list.pop();
+    if (!histWrite(store, list)) {                                          /* the browser's quota is smaller than ours: keep fewer */
+      list = list.slice(0, Math.max(1, Math.floor(list.length / 2)));
+      if (!histWrite(store, list)) return { saved: false, reason: 'storage', count: 0 };
+    }
+    return { saved: true, reason: '', count: list.length };
+  }
+  function histDelete(store, id) { histWrite(store, histLoad(store).filter(function (x) { return x.id !== id; })); }
+  function histClear(store) { try { store.removeItem(HIST_KEY); } catch (e) { } }
+  function histEnabled(store) { try { return store.getItem(HIST_ON) === '1'; } catch (e) { return false; } }
+  /* turning it off also deletes what was kept: the history holds code */
+  function histSetEnabled(store, on) {
+    try { if (on) store.setItem(HIST_ON, '1'); else { store.removeItem(HIST_ON); histClear(store); } } catch (e) { }
+  }
+  function histLabel(e) {
+    var d = new Date(e.t), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ' · ' + e.lang + ' · ' + e.todos + ' TODO' + (e.todos === 1 ? '' : 's');
+  }
+  root.SparkUI = { splitLines: splitLines, lineDiff: lineDiff, collapse: collapse, wordDiff: wordDiff, renderDiff: renderDiff, histAdd: histAdd, histLoad: histLoad, histDelete: histDelete, histClear: histClear,
+    histEnabled: histEnabled, histSetEnabled: histSetEnabled, histLabel: histLabel, crc32: crc32, makeZip: makeZip, highlight: highlight, b64urlEncode: b64urlEncode, b64urlDecode: b64urlDecode, findTodoLine: findTodoLine, bytesToB64: bytesToB64, esc: esc };
   if (typeof module !== 'undefined' && module.exports) module.exports = root.SparkUI;
 })(typeof window !== 'undefined' ? window : globalThis);
 """
@@ -836,9 +1042,16 @@ table{border-collapse:collapse;width:100%;font-size:13.5px}th,td{text-align:left
 .st-OK{color:#15803d}.st-CHECK{color:var(--warn)}.st-NEEDS{color:var(--todo)}.st-FAILED{color:var(--todo);font-weight:700}
 .stats{display:flex;gap:8px;flex-wrap:wrap;padding:10px 12px}.tblwrap{overflow:auto;max-height:420px}
 footer{max-width:1320px;margin:8px auto 30px;padding:0 18px;color:var(--mut);font-size:12.5px}
+.dh{display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid var(--bd);font-size:13px;flex-wrap:wrap}.dh .sec{margin-left:auto}
+.dnone{padding:14px;color:var(--mut)}.dwrap{overflow:auto;max-height:620px}
+table.dt{border-collapse:collapse;min-width:100%;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+table.dt td{border-bottom:0;padding:0 8px;vertical-align:top}table.dt td.no{width:3.4em;text-align:right;color:var(--mut);user-select:none;font-size:12px}
+table.dt td.tx{white-space:pre;width:50%}table.dt td.l .dx{background:rgba(180,35,24,.36);border-radius:3px}table.dt td.r .dx{background:rgba(21,128,61,.40);border-radius:3px}table.dt td.empty{background:var(--code)}
+table.dt tr.d-chg td.l,table.dt tr.d-del td.l{background:rgba(180,35,24,.16)}table.dt tr.d-chg td.r,table.dt tr.d-add td.r{background:rgba(21,128,61,.18)}
+table.dt tr.dskip td{text-align:center;color:var(--mut);cursor:pointer;background:var(--code);font:12.5px system-ui,sans-serif;padding:3px 8px}
 </style></head><body>
 <header><h1><b>Sparq</b>ify</h1><span class="sub">convert pandas, SQL, SAS, R, Informatica, procedures, streaming… to Apache Spark</span>
-<div class="tabs"><button id="tabC" class="on">Convert</button><button id="tabP">Project</button><button id="tabO">Orchestrate</button><button id="theme" title="Toggle light / dark">◐</button><span id="who" class="sub" title="signed in as"></span></div></header>
+<div class="tabs"><button id="tabC" class="on">Convert</button><button id="tabP">Project</button><button id="tabO">Orchestrate</button><button id="theme" title="Toggle light / dark">◐</button><span id="who" class="sub" title="signed in as" style="align-self:center;margin-left:6px"></span></div></header>
 <main>
 <div class="opts" id="optbar">
   <label>From<select id="lang"></select></label>
@@ -882,6 +1095,16 @@ footer{max-width:1320px;margin:8px auto 30px;padding:0 18px;color:var(--mut);fon
    <span class="sp"><button class="sec" id="cp">Copy</button><button class="sec" id="dl">Download</button></span></div>
    <div class="code" id="out"></div></div>
  </div>
+ <div class="opts" id="cmpBar" style="margin-top:10px;border-style:dashed">
+  <label>Compare the output with<select id="cmp"><option value="input">the input (shows what changed)</option><option value="prev">the previous conversion</option></select></label>
+  <label class="ck"><input type="checkbox" id="cmp_ws">Ignore whitespace</label>
+  <button class="sec" id="cmpGo" disabled>Show side-by-side diff</button>
+  <label class="ck"><input type="checkbox" id="hist_on">Keep a history in this browser</label>
+  <label>History<select id="hist"><option value="">(empty)</option></select></label>
+  <button class="sec" id="histRestore" disabled>Restore</button><button class="sec" id="histDel" disabled>Delete</button><button class="sec" id="histClr" disabled>Clear history</button>
+  <div class="priv" id="histNote">History stays in this browser and is never sent to the server. It keeps your input and output (up to 30 conversions), so leave it off on a shared computer. Turning it off deletes it.</div>
+ </div>
+ <div class="rep" id="diffBox" style="padding:0"></div>
  <div class="rep" id="rep"></div>
  <div class="rep" id="prompts"></div>
  <details class="opts" id="agentBox" style="margin-top:10px;display:block"><summary>Assistant — ask a language model to explain or fix the converted code</summary>
@@ -956,9 +1179,9 @@ function renderCode(el,code,lang){
   el.innerHTML=lines.map(l=>'<div class="ln'+(l.todo?' todo':l.ai?' ai':'')+'" id="'+el.id+'-L'+l.n+'"><span class="no">'+l.n+'</span><span class="tx">'+l.html+'</span></div>').join('');
   return lines;
 }
-let outLines=[],todoIdx=[],cur=-1,last='',ext='.py';
+let outLines=[],todoIdx=[],cur=-1,last='',prevOut='',ext='.py';
 function gotoLine(el,i){const e=document.getElementById(el.id+'-L'+(i+1));if(!e)return;e.scrollIntoView({block:'center',behavior:'smooth'});e.classList.remove('flash');void e.offsetWidth;e.classList.add('flash')}
-function setupNav(){todoIdx=outLines.map((l,i)=>l.todo?i:-1).filter(i=>i>=0);cur=-1;
+function setupNav(){$('cmpGo').disabled=!last;todoIdx=outLines.map((l,i)=>l.todo?i:-1).filter(i=>i>=0);cur=-1;
   $('todoNav').style.display=todoIdx.length?'inline':'none';$('todoCnt').textContent=todoIdx.length+' TODO line(s)'}
 function step(d){if(!todoIdx.length)return;cur=(cur+d+todoIdx.length)%todoIdx.length;gotoLine($('out'),todoIdx[cur]);$('todoCnt').textContent=(cur+1)+' / '+todoIdx.length}
 $('nextT').onclick=()=>step(1);$('prevT').onclick=()=>step(-1);
@@ -975,11 +1198,11 @@ async function convert(){
   const b=$('go');b.disabled=true;b.textContent='Converting…';
   try{
     const j=await post('/api/convert',apiBody({source:$('src').value}));
-    last=j.code;const lang=codeLang(j.detected);
+    prevOut=last;last=j.code;const lang=codeLang(j.detected);
     outLines=renderCode($('out'),j.code||'(no output — see the report)',lang);setupNav();
     const d=$('det');d.style.display='inline-block';d.textContent='detected: '+j.detected;
     ext=lang==='jvm'?(j.detected==='java'?'.java':'.scala'):lang==='sql'?'.sql':j.detected==='notebook'?'.ipynb':'.py';
-    report($('rep'),j,outLines,$('out'));
+    report($('rep'),j,outLines,$('out'));histRecord(j);
     const sb=$('strictB');if($('strict').checked&&j.todos.length){sb.style.display='block';sb.textContent='Strict mode: '+j.todos.length+' TODO(s) remain — CI would fail on this conversion.'}else sb.style.display='none';
     const pr=$('prompts');if(j.prompts&&j.prompts.length){pr.innerHTML='<h3 class="n">Dry run: '+j.prompts.length+' prompt(s) that would be sent (nothing was sent)</h3>'+j.prompts.map(p=>'<div class="files" style="padding:4px 0"><b>block at output line '+p.line+'</b><pre>'+U.esc(p.prompt)+'</pre></div>').join('');pr.style.display='block'}else pr.style.display='none';
   }catch(e){$('out').innerHTML='<div class="err">'+U.esc(e.message)+'</div>';$('rep').style.display='none';outLines=[];setupNav()}
@@ -1001,7 +1224,7 @@ $('agGo').onclick=async()=>{
 };
 $('agUse').onclick=()=>{if(!agCode)return;last=agCode;outLines=renderCode($('out'),last,codeLang($('det').textContent.replace('detected: ','')));setupNav();$('agUse').disabled=true;agCode=null};
 $('src').addEventListener('keydown',e=>{if(e.key==='Enter'&&(e.ctrlKey||e.metaKey)){e.preventDefault();convert()}});
-$('clr').onclick=()=>{$('src').value='';$('out').innerHTML='';$('rep').style.display='none';$('det').style.display='none';last='';outLines=[];setupNav()};
+$('clr').onclick=()=>{$('diffBox').style.display='none';$('src').value='';$('out').innerHTML='';$('rep').style.display='none';$('det').style.display='none';last='';outLines=[];setupNav()};
 $('cp').onclick=async()=>{try{await navigator.clipboard.writeText(last);$('cp').textContent='Copied';setTimeout(()=>$('cp').textContent='Copy',1200)}catch(e){}};
 $('dl').onclick=()=>{if(last)dl('converted'+ext,last)};
 /* ---- link / state */
@@ -1078,7 +1301,42 @@ $('ogo').onclick=async()=>{
 };
 $('ozip').onclick=()=>{const n=Object.keys(ofiles);if(n.length)dl('sparqify-jobs.zip',U.makeZip(n.map(k=>({name:k,data:ofiles[k]}))),'application/zip')};
 $('fileO').onchange=async e=>{const f=e.target.files[0];if(!f)return;try{$('osrc').value=await readText(f);$('ogo').click()}catch(er){$('oout').innerHTML='<div class="err">'+U.esc(er.message)+'</div>'}};
-api('/api/whoami').then(r=>r.json()).then(j=>{if(j.user)$('who').textContent=j.user}).catch(()=>{});
+/* ---- side-by-side diff and the browser-side history */
+const LS=(()=>{try{return window.localStorage}catch(e){return null}})();
+function histRefresh(){
+  const list=U.histLoad(LS),sel=$('hist'),cmp=$('cmp');
+  sel.textContent='';if(!list.length)sel.add(new Option('(empty)',''));list.forEach(e=>sel.add(new Option(U.histLabel(e),e.id)));
+  [...cmp.options].filter(o=>o.value.startsWith('h:')).forEach(o=>o.remove());
+  list.forEach(e=>cmp.add(new Option('history: '+U.histLabel(e),'h:'+e.id)));
+  ['histRestore','histDel','histClr'].forEach(i=>$(i).disabled=!list.length);
+}
+function histRecord(j){
+  if(!U.histEnabled(LS))return;
+  const r=U.histAdd(LS,{id:Date.now().toString(36)+Math.random().toString(36).slice(2,7),t:Date.now(),lang:j.detected||'',src:$('src').value,out:j.code||'',todos:j.todos.length,warnings:j.warnings.length});
+  $('histNote').textContent=r.saved?'History: '+r.count+' conversion(s) kept in this browser.':r.reason==='too-large'?'This conversion is too large to keep in the history (limit about 300 KB).':'The browser would not store the history (storage full or blocked).';
+  histRefresh();
+}
+$('hist_on').checked=U.histEnabled(LS);
+$('hist_on').onchange=e=>{U.histSetEnabled(LS,e.target.checked);if(!e.target.checked)$('histNote').textContent='History is off and what was kept has been deleted.';histRefresh()};
+$('histClr').onclick=()=>{U.histClear(LS);histRefresh()};
+$('histDel').onclick=()=>{const id=$('hist').value;if(id){U.histDelete(LS,id);histRefresh()}};
+$('histRestore').onclick=()=>{
+  const e=U.histLoad(LS).find(x=>x.id===$('hist').value);if(!e)return;
+  $('src').value=e.src;prevOut=last;last=e.out;const lang=codeLang(e.lang);outLines=renderCode($('out'),e.out||'(no output)',lang);setupNav();
+  const d=$('det');d.style.display='inline-block';d.textContent='detected: '+e.lang;ext=lang==='jvm'?(e.lang==='java'?'.java':'.scala'):lang==='sql'?'.sql':e.lang==='notebook'?'.ipynb':'.py';$('rep').style.display='none';$('diffBox').style.display='none'};
+$('cmpGo').onclick=()=>{
+  const v=$('cmp').value,box=$('diffBox');let a,lt;
+  if(v==='input'){a=$('src').value;lt='Input'}
+  else if(v==='prev'){if(!prevOut){box.style.display='block';box.textContent='';const m=document.createElement('div');m.className='dnone';m.textContent='There is no previous conversion in this page yet: convert once more, or pick a history entry.';box.appendChild(m);return}a=prevOut;lt='Previous conversion'}
+  else{const e=U.histLoad(LS).find(x=>'h:'+x.id===v);if(!e)return;a=e.out;lt='History '+U.histLabel(e)}
+  const ws=$('cmp_ws').checked;U.renderDiff(document,box,U.lineDiff(a,last,{ignoreWs:ws}),{leftTitle:lt,rightTitle:'Spark output (current)',ignoreWs:ws});box.scrollIntoView({block:'nearest'})};
+histRefresh();
+/* ---- who is signed in, and what the role allows */
+api('/api/whoami').then(r=>r.json()).then(j=>{
+  if(j.user)$('who').textContent=j.user+(j.role&&j.role!=='user'?' ('+j.role+')':'');
+  if(j.can&&!j.can.ai){const why=' — not available for read-only users';
+    $('ai_on').checked=false;$('ai_apply').checked=false;$('ai_on').disabled=true;$('ai_apply').disabled=true;$('agGo').disabled=true;$('agMsg').disabled=true;
+    $('aiBox').querySelector('summary').textContent+=why+' (dry run still works)';$('agentBox').querySelector('summary').textContent+=why}}).catch(()=>{});
 api('/api/examples?kind=orch').then(r=>r.json()).then(l=>l.forEach(n=>$('oexample').add(new Option(n,n))));
 $('oexample').onchange=async e=>{if(!e.target.value)return;const j=await (await api('/api/example?name='+encodeURIComponent(e.target.value))).json();$('osrc').value=j.source;$('ogo').click()};
 /* ---- examples, tabs, theme */

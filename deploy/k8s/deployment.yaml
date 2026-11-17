@@ -60,6 +60,10 @@ spec:
             # - {name: SPARQIFY_AUTH_HEADER, value: X-Auth-Request-Email}
             # - name: SPARQIFY_PROXY_SECRET
             #   valueFrom: {secretKeyRef: {name: sparqify, key: proxy-secret}}
+            # Roles for names that arrive from the proxy (comma-separated). Everybody else is a `user`; viewers cannot use the AI features or read /metrics.
+            # - {name: SPARQIFY_ADMINS, value: "alice@example.com"}
+            # - {name: SPARQIFY_VIEWERS, value: "bob@example.com,carol@example.com"}
+            # - {name: SPARQIFY_DEFAULT_ROLE, value: "user"}      # or "viewer": read-only until a person is named
             - name: SPARQIFY_AI_API_KEY
               valueFrom: {secretKeyRef: {name: sparqify, key: ai-api-key, optional: true}}
           lifecycle:

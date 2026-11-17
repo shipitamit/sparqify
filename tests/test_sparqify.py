@@ -1811,7 +1811,18 @@ def test_java_operators_convert_without_todos():
     assert "collect().forEach(System.out::println)" in code
 
 
-@pytest.mark.skipif(__import__("shutil").which("javac") is None, reason="needs a JDK")
+def _have_javac():
+    """a javac that really runs: macOS ships a /usr/bin/javac stub that exists without a JDK and only prints "Unable to locate a Java Runtime" """
+    import shutil, subprocess
+    if shutil.which("javac") is None:
+        return False
+    try:
+        return subprocess.run(["javac", "-version"], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+@pytest.mark.skipif(not _have_javac(), reason="needs a working JDK")
 def test_java_output_compiles_against_spark_api_stubs():
     # the stubs reproduce the Spark 3.x JavaRDD/JavaPairRDD/JavaDoubleRDD signatures: this checks Java typing, not Spark behaviour
     code, _ = convert(_JAVA_SAMPLE, "java")
@@ -3289,15 +3300,15 @@ def test_r_select_rename_mixed_with_helper_stays_todo():
 
 
 # ---------------------------------------------------------------- web: per-user access
-def _auth_server(tmp_path, **kw):
+def _auth_server(tmp_path, roles=None, **kw):
     import threading
     from sparqify import web
     from sparqify import webauth as W
     f = tmp_path / "users"
     toks = {}
     lines = []
-    for name in ("alice", "bob"):
-        t, line = W.new_user_line(name)
+    for name in (list(roles) if roles else ("alice", "bob")):
+        t, line = W.new_user_line(name, (roles or {}).get(name, "user"))
         toks[name] = t
         lines.append(line)
     f.write_text("# users\n" + "\n".join(lines) + "\n")
@@ -3327,8 +3338,8 @@ def test_web_per_user_tokens_identify_users_and_log_them(tmp_path, capfd):
     srv, port, toks, f = _auth_server(tmp_path, access_log=True, token="shared-secret")
     try:
         who = lambda tok: _j.loads(_web_req(port, "GET", "/api/whoami", {"X-Sparqify-Token": tok})[2])
-        assert who(toks["alice"]) == {"user": "alice", "auth": "token"} and who(toks["bob"])["user"] == "bob"
-        assert who("shared-secret") == {"user": "shared", "auth": "shared-token"}
+        assert who(toks["alice"]) == {"user": "alice", "auth": "token", "role": "user", "can": {"ai": True, "metrics": False}} and who(toks["bob"])["user"] == "bob"
+        assert who("shared-secret") == {"user": "shared", "auth": "shared-token", "role": "admin", "can": {"ai": True, "metrics": True}}
         assert _web_req(port, "GET", "/api/whoami", {"X-Sparqify-Token": "nope"})[0] == 401
         assert _web_req(port, "GET", "/api/whoami")[0] == 401
         assert _web_req(port, "GET", "/api/whoami", {"Authorization": "Bearer " + toks["alice"]})[0] == 200
@@ -3381,7 +3392,7 @@ def test_web_trusted_proxy_identity_needs_the_proxy_secret(tmp_path):
     ok = {"X-Sparqify-Proxy-Secret": "s" * 24, "X-Auth-Request-Email": "dana@example.com", "X-Forwarded-For": "1.2.3.4"}
     try:
         st, hd, b = _web_req(port, "GET", "/api/whoami", ok)
-        assert st == 200 and _j.loads(b) == {"user": "dana@example.com", "auth": "proxy"}
+        assert st == 200 and _j.loads(b) == {"user": "dana@example.com", "auth": "proxy", "role": "user", "can": {"ai": True, "metrics": False}}
         assert _web_req(port, "GET", "/", ok)[0] == 200                                        # the page itself needs no token behind the proxy
         assert _web_req(port, "GET", "/api/whoami", {**ok, "X-Sparqify-Proxy-Secret": "w" * 24})[0] == 401      # wrong secret
         assert _web_req(port, "GET", "/api/whoami", {k: v for k, v in ok.items() if k != "X-Sparqify-Proxy-Secret"})[0] == 401   # a client claiming a name directly
@@ -3529,3 +3540,302 @@ def test_pypi_name_is_sparqify_while_command_and_import_stay_sparqify():
     assert re.search(r'(?m)^sparqify = "sparqify\.cli:main"$', py) and 'packages = ["sparqify"]' in py
     readme = open(os.path.join(root, "README.md")).read()
     assert "pip install sparqify" in readme
+
+
+
+def test_package_version_matches_pyproject():
+    import sparqify
+    toml = open(os.path.join(HERE, "..", "pyproject.toml")).read()
+    assert re.search(r'(?m)^version = "([^"]+)"', toml).group(1) == sparqify.__version__
+
+
+
+# ---------------------------------------------------------------- web: roles
+def test_users_file_roles_parse_and_default_to_user():
+    from sparqify import webauth as W
+    h = "a" * 64
+    got = W.parse_users_with_roles(f"a:sha256:{h}\nb:sha256:{h}:viewer\nc:sha256:{h}:admin\n")
+    assert [got[n][1] for n in "abc"] == ["user", "viewer", "admin"]
+    assert W.parse_users(f"b:sha256:{h}:viewer") == {"b": h}                                      # the older helper still returns name -> hash
+    for bad in (f"x:sha256:{h}:boss", f"x:sha256:{h}:", f"x:sha256:{h}:admin:more", f"x:sha256:{h}:Admin"):
+        with pytest.raises(W.UsersFileError):
+            W.parse_users(bad)
+    t, line = W.new_user_line("vic", "viewer")
+    assert line.endswith(":viewer") and W.parse_users_with_roles(line)["vic"][1] == "viewer"
+    with pytest.raises(W.UsersFileError):
+        W.new_user_line("vic", "root")
+    assert W.can("admin", "metrics") and W.can("user", "ai") and not W.can("user", "metrics") and W.can("viewer", "convert")
+    assert not W.can("viewer", "ai") and not W.can("viewer", "metrics") and not W.can("nobody", "convert")
+
+
+def test_sparqify_users_add_role(tmp_path, capsys):
+    from sparqify import webauth as W
+    from sparqify.cli import main
+    f = tmp_path / "users"
+    assert main(["users", "add", "vic", "--role", "viewer", "--file", str(f)]) == 0 and "vic (viewer)" in capsys.readouterr().out
+    assert main(["users", "add", "ann", "--file", str(f)]) == 0
+    assert {n: r for n, (_h, r) in W.parse_users_with_roles(f.read_text()).items()} == {"vic": "viewer", "ann": "user"}
+    with pytest.raises(SystemExit):
+        main(["users", "add", "x", "--role", "root"])
+
+
+def test_web_roles_are_enforced(tmp_path):
+    import json as _j
+    from sparqify import web
+    srv, port, toks, f = _auth_server(tmp_path, roles={"root": "admin", "uma": "user", "vic": "viewer"}, token="shared-secret", ai_daily_limit=1)
+    hdr = lambda tok, post=False: {"X-Sparqify-Token": tok, **({"Content-Type": "application/json"} if post else {})}
+    post = lambda tok, path, obj: _web_req(port, "POST", path, hdr(tok, True), _j.dumps(obj))
+    try:
+        who = lambda tok: _j.loads(_web_req(port, "GET", "/api/whoami", hdr(tok))[2])
+        assert [who(toks[n])["role"] for n in ("root", "uma", "vic")] == ["admin", "user", "viewer"]
+        assert who(toks["vic"])["can"] == {"ai": False, "metrics": False} and who(toks["root"])["can"] == {"ai": True, "metrics": True}
+        # /metrics: admins (and the shared token, which always could) only
+        assert [_web_req(port, "GET", "/metrics", hdr(t))[0] for t in (toks["root"], "shared-secret", toks["uma"], toks["vic"])] == [200, 200, 403, 403]
+        # everybody may convert; a viewer may not start an AI request, but a dry run sends nothing, so it is fine
+        src = {"source": "x = 1\n", "language": "python"}
+        assert [post(toks[n], "/api/convert", src)[0] for n in ("root", "uma", "vic")] == [200, 200, 200]
+        assert post(toks["vic"], "/api/convert", {**src, "ai": {"enabled": True}})[0] == 403
+        assert post(toks["vic"], "/api/convert", {**src, "ai": {"enabled": True, "dry_run": True}})[0] == 200
+        st, _h, body = post(toks["vic"], "/api/agent", {"source": "x", "message": "hi"})
+        assert st == 403 and "read-only" in _j.loads(body)["error"]
+        # a user gets past the role check (the empty message is then refused by the handler, with no network call)
+        assert post(toks["uma"], "/api/agent", {"source": "x", "message": ""})[0] == 400
+        # refused requests do not use up the daily AI cap (limit 1): uma's first real request still passes the cap, the second does not
+        assert post(toks["uma"], "/api/agent", {"source": "x", "message": ""})[0] == 429
+        assert post(toks["root"], "/api/agent", {"source": "x", "message": ""})[0] == 400          # the cap is per user
+        text = _web_req(port, "GET", "/metrics", hdr(toks["root"]))[2].decode()
+        assert re.search(r"sparqify_forbidden_total (\d+)", text) and int(re.search(r"sparqify_forbidden_total (\d+)", text).group(1)) >= 4
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+
+
+def test_web_proxy_roles_come_from_the_lists(tmp_path):
+    import json as _j
+    import threading
+    from sparqify import web
+    from sparqify import webauth as W
+    web._fails.clear()
+    srv = web.make_server("127.0.0.1", 0, auth_header="X-Auth-Request-Email", proxy_secret="s" * 24, trusted_proxies=1,
+                          admins=["Boss@Example.com", " "], viewers=["ro@example.com", "both@example.com"])
+    srv.admins = srv.admins | {"both@example.com"}                   # a name in both lists: the lower role (viewer) wins
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    role = lambda who: _j.loads(_web_req(port, "GET", "/api/whoami", {"X-Sparqify-Proxy-Secret": "s" * 24, "X-Auth-Request-Email": who, "X-Forwarded-For": "1.2.3.4"})[2])["role"]
+    try:
+        assert [role(w) for w in ("boss@example.com", "BOSS@example.com", "ro@example.com", "both@example.com", "anyone@example.com")] == \
+            ["admin", "admin", "viewer", "viewer", "user"]
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+    srv = web.make_server("127.0.0.1", 0, auth_header="X-Auth-Request-Email", proxy_secret="s" * 24, trusted_proxies=1, default_role="viewer", admins=["boss@example.com"])
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        assert [role(w) for w in ("anyone@example.com", "boss@example.com")] == ["viewer", "admin"]
+    finally:
+        srv.shutdown()
+        web._fails.clear()
+    with pytest.raises(W.UsersFileError):
+        web.make_server("127.0.0.1", 0, default_role="admin")                                     # an admin has to be named, never a default
+
+
+def test_web_without_sign_in_everybody_is_an_admin():
+    import json as _j
+    import threading
+    from sparqify import web
+    web._fails.clear()
+    srv = web.make_server("127.0.0.1", 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_address[1]
+    try:
+        assert _j.loads(_web_req(port, "GET", "/api/whoami")[2]) == {"user": None, "auth": "none", "role": "admin", "can": {"ai": True, "metrics": True}}
+        assert _web_req(port, "GET", "/metrics")[0] == 200
+        assert _web_req(port, "POST", "/api/agent", {"Content-Type": "application/json"}, _j.dumps({"source": "x", "message": ""}))[0] == 400
+    finally:
+        srv.shutdown()
+
+
+# ---------------------------------------------------------------- web UI: side-by-side diff, history, roles in the page
+def _node_ui(tmp_path, js):
+    """run `js` in node with the UI library loaded as U; the script prints one JSON value, which is returned"""
+    import json as _j
+    import shutil
+    import subprocess
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("node missing")
+    from sparqify.web import UI_JS
+    (tmp_path / "ui.js").write_text(UI_JS)
+    (tmp_path / "t.js").write_text("const U=require('./ui.js');\nconst out=(v)=>console.log(JSON.stringify(v));\n" + js)
+    r = subprocess.run([node, "t.js"], cwd=tmp_path, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0, r.stderr
+    return _j.loads(r.stdout.strip().splitlines()[-1])
+
+
+def test_ui_line_diff_rows_and_counts(tmp_path):
+    got = _node_ui(tmp_path, r"""
+const rows=(a,b,o)=>U.lineDiff(a,b,o).rows.map(r=>r.k+':'+(r.l===null?'-':r.l)+'|'+(r.r===null?'-':r.r));
+const d=U.lineDiff("a\nb\nc\nd\ne\n","a\nB\nc\nd\nd2\ne\n");
+out({
+  basic:[d.added,d.removed,d.same,rows("a\nb\nc\nd\ne\n","a\nB\nc\nd\nd2\ne\n")],
+  same:[U.lineDiff("x\ny","x\ny").same,U.lineDiff("","").same,U.lineDiff("x\r\ny\r\n","x\ny\n").same],          // CRLF and a final newline are not differences
+  onlyAdds:rows("","a\nb"),onlyDels:rows("a\nb",""),
+  numbers:U.lineDiff("a\nb\nc","a\nX\nc").rows.map(r=>[r.ln,r.rn]),
+  ws:[U.lineDiff("a  b\nc","a b\n c",{ignoreWs:true}).same,U.lineDiff("a  b\nc","a b\n c").same],
+  tabs:rows("if x:\n\treturn 1","if x:\n    return 1",{ignoreWs:true}),
+  unevenBlock:rows("k\nold1\nold2\nold3\nz","k\nnew1\nz"),
+  approx:(()=>{const r=U.lineDiff("a\nb\nc\nd","a\nX\nY\nd",{maxCells:1});return [r.approx,r.added,r.removed,r.rows.map(x=>x.k)]})(),
+});""")
+    assert got["basic"][:3] == [2, 1, False] and got["basic"][3] == ["eq:a|a", "chg:b|B", "eq:c|c", "eq:d|d", "add:-|d2", "eq:e|e"]
+    assert got["same"] == [True, True, True]
+    assert got["onlyAdds"] == ["add:-|a", "add:-|b"] and got["onlyDels"] == ["del:a|-", "del:b|-"]
+    assert got["numbers"] == [[1, 1], [2, 2], [3, 3]]
+    assert got["ws"] == [True, False] and got["tabs"] == ["eq:if x:|if x:", "eq:\treturn 1|    return 1"]
+    assert got["unevenBlock"] == ["eq:k|k", "chg:old1|new1", "del:old2|-", "del:old3|-", "eq:z|z"]
+    assert got["approx"] == [True, 2, 2, ["eq", "chg", "chg", "eq"]]                 # past the size limit the middle is one replaced block
+
+
+def test_ui_line_diff_is_fast_enough_and_collapse_keeps_context(tmp_path):
+    got = _node_ui(tmp_path, r"""
+const mk=(n,f)=>Array.from({length:n},(_,i)=>f(i)).join('\n');
+const t0=Date.now();
+const big=U.lineDiff(mk(1800,i=>'line '+i),mk(1800,i=>i%7===0?'changed '+i:'line '+i));                  // 1800 x 1800 with a change every 7th line
+const ms=Date.now()-t0;
+const huge=U.lineDiff(mk(5000,i=>'a'+i),mk(5000,i=>'b'+i));                                               // 25M cells: must fall back, not hang
+const c=U.collapse(U.lineDiff(mk(30,i=>'l'+i),mk(30,i=>i===15?'CHANGED':'l'+i)).rows,3);
+out({ms:ms,bigChanged:big.added,huge:[huge.approx,huge.added],collapsed:c.map(r=>r.k==='skip'?'skip'+r.n:r.k),skipHolds:c[0].rows.length,
+     none:U.collapse(U.lineDiff("a\nb","a\nb").rows,3).map(r=>r.k==='skip'?'skip'+r.n:r.k)});""")
+    assert got["ms"] < 8000 and got["bigChanged"] == 258 and got["huge"] == [True, 5000]
+    assert got["collapsed"] == ["skip12", "eq", "eq", "eq", "chg", "eq", "eq", "eq", "skip11"] and got["skipHolds"] == 12
+    assert got["none"] == ["skip2"]
+
+
+def test_ui_diff_renderer_never_parses_text_as_html(tmp_path):
+    got = _node_ui(tmp_path, r"""
+class El{constructor(t){this.tag=t;this.children=[];this.className='';this.style={};this._t='';this.colSpan=1;this.onclick=null}
+  set textContent(v){this._t=String(v);this.children=[]} get textContent(){return this._t+this.children.map(c=>c.textContent).join('')}
+  set innerHTML(v){throw new Error('innerHTML must never be used for compared text')}
+  appendChild(c){this.children.push(c);return c} removeChild(c){this.children=this.children.filter(x=>x!==c)}
+  insertBefore(n,r){this.children.splice(this.children.indexOf(r),0,n);return n}}
+const doc={createElement:t=>new El(t)};
+const all=(e,f,acc=[])=>{if(f(e))acc.push(e);e.children.forEach(c=>all(c,f,acc));return acc};
+const evil='<img src=x onerror=alert(1)><script>alert(2)</script>';
+const mk=(n,f)=>Array.from({length:n},(_,i)=>f(i)).join('\n');
+const box=new El('div');
+U.renderDiff(doc,box,U.lineDiff(mk(40,i=>i===20?evil:'keep '+i),mk(40,i=>i===20?'safe & <b>bold</b>':'keep '+i)),{leftTitle:'Input',rightTitle:'Spark output'});
+const trs=all(box,e=>e.tag==='tr');
+const skip=trs.filter(t=>t.className==='dskip');
+const before=trs.length;
+skip[0].onclick();                                          // expanding a hidden run puts its rows in and removes the placeholder
+const after=all(box,e=>e.tag==='tr');
+const chg=after.find(t=>t.className==='d-chg');
+const same=new El('div');U.renderDiff(doc,same,U.lineDiff("a","a"),{});
+const ws=new El('div');U.renderDiff(doc,ws,U.lineDiff("a  b","a b",{ignoreWs:true}),{ignoreWs:true});
+const closeBtn=all(box,e=>e.tag==='button')[0];closeBtn.onclick();
+out({head:all(box,e=>e.className==='dh').length,afterClose:[box.children.length,box.style.display],
+     evilLeft:chg.children[1].textContent,evilRight:chg.children[3].textContent,
+     skipText:skip.map(s=>s.children[0].textContent),colSpan:skip[0].children[0].colSpan,
+     rowsBefore:before,rowsAfter:after.length,placeholdersAfter:after.filter(t=>t.className==='dskip').length,
+     same:same.textContent,ws:ws.textContent});""")
+    assert got["evilLeft"] == '<img src=x onerror=alert(1)><script>alert(2)</script>' and got["evilRight"] == "safe & <b>bold</b>"
+    assert got["skipText"][0].startswith("\u22ef 17 unchanged lines") and got["colSpan"] == 4
+    assert got["rowsAfter"] == got["rowsBefore"] - 1 + 17 and got["placeholdersAfter"] == 1
+    assert "identical" in got["same"] and "No differences." in got["same"] and "ignoring whitespace" in got["ws"]
+    assert got["afterClose"] == [0, "none"]
+
+
+def test_ui_history_is_capped_deduplicated_and_deleted_with_the_switch(tmp_path):
+    got = _node_ui(tmp_path, r"""
+const mkStore=(quota)=>{const m={};return {m,getItem:k=>k in m?m[k]:null,setItem:(k,v)=>{if(quota&&v.length>quota)throw new Error('QuotaExceededError');m[k]=String(v)},removeItem:k=>{delete m[k]}}};
+const E=(i,o)=>Object.assign({id:'id'+i,t:1700000000000+i*60000,lang:'sql',src:'select '+i,out:'out '+i,todos:i%3,warnings:0},o||{});
+const s=mkStore();const res={};
+res.off=[U.histEnabled(s)];
+U.histSetEnabled(s,true);res.on=U.histEnabled(s);
+for(let i=0;i<35;i++)U.histAdd(s,E(i));
+const l=U.histLoad(s);res.cap=[l.length,l[0].id,l[l.length-1].id];                       // newest first, oldest dropped at 30
+res.dupe=(()=>{const r=U.histAdd(s,E(99,{src:l[5].src,out:l[5].out}));const n=U.histLoad(s);return [r.saved,n.length,n[0].id]})();   // the same conversion moves to the top
+res.tooLarge=U.histAdd(s,E(100,{src:'x'.repeat(200000),out:'y'.repeat(200000)}));
+res.invalid=U.histAdd(s,{id:1});
+res.bytes=(()=>{const s2=mkStore();for(let i=0;i<10;i++)U.histAdd(s2,E(i,{src:'s'.repeat(100),out:'o'.repeat(100)}),{maxBytes:1000});return U.histLoad(s2).length})();
+res.quota=(()=>{const s3=mkStore(900);for(let i=0;i<10;i++)U.histAdd(s3,E(i,{src:'s'.repeat(50),out:'o'.repeat(50)}));const r=U.histLoad(s3);return [r.length>0&&r.length<10,r[0].id]})();
+res.noStorage=U.histAdd({getItem(){throw new Error('blocked')},setItem(){throw new Error('blocked')},removeItem(){}},E(1));
+U.histDelete(s,'id34');res.deleted=U.histLoad(s).some(e=>e.id==='id34');
+res.label=U.histLabel(E(2,{lang:'tsql',todos:1})).replace(/^\d\d-\d\d \d\d:\d\d/,'T');
+U.histSetEnabled(s,false);res.afterOff=[U.histEnabled(s),U.histLoad(s).length,Object.keys(s.m)];                 // switching it off deletes what was kept
+s.m['sparqify.history']='{not json';res.corrupt=U.histLoad(s);
+s.m['sparqify.history']=JSON.stringify([{id:'a'},E(7)]);res.filtered=U.histLoad(s).map(e=>e.id);                  // malformed entries are ignored
+out(res);""")
+    assert got["off"] == [False] and got["on"] is True
+    assert got["cap"] == [30, "id34", "id5"] and got["dupe"] == [True, 30, "id99"]
+    assert got["tooLarge"] == {"saved": False, "reason": "too-large", "count": 30} and got["invalid"]["reason"] == "invalid"
+    assert 1 <= got["bytes"] < 10 and got["quota"][0] is True and got["quota"][1] == "id9"
+    assert got["noStorage"]["saved"] is False and got["deleted"] is False and got["label"] == "T \u00b7 tsql \u00b7 1 TODO"
+    assert got["afterOff"] == [False, 0, []] and got["corrupt"] == [] and got["filtered"] == ["id7"]
+
+
+def test_page_script_only_uses_elements_that_exist_and_parses():
+    import json as _j
+    import shutil
+    import subprocess
+    import tempfile
+    from sparqify.web import PAGE, LANGS, DIALECTS, UI_JS
+    page = PAGE.replace("__LANGS__", _j.dumps(LANGS)).replace("__DIALECTS__", _j.dumps(DIALECTS))
+    ids = re.findall(r'\bid="([A-Za-z_][\w-]*)"', page)
+    assert len(ids) == len(set(ids)), sorted({i for i in ids if ids.count(i) > 1})                  # no duplicate ids
+    script = page.split("<script>")[-1].split("</script>")[0]
+    used = set(re.findall(r"\$\('([A-Za-z_][\w-]*)'\)", script))
+    assert not (used - set(ids)), sorted(used - set(ids))                                           # a missing element would break the whole page at load
+    assert {"cmp", "cmpGo", "cmp_ws", "diffBox", "hist", "hist_on", "histRestore", "histDel", "histClr", "histNote", "who"} <= set(ids)
+    render = re.search(r"function renderDiff.*?\n  }\n", UI_JS, re.S).group(0)
+    assert "innerHTML" not in render and "insertAdjacentHTML" not in render                         # the compared text is never parsed as HTML
+    node = shutil.which("node")
+    if node:
+        with tempfile.TemporaryDirectory() as d:
+            open(os.path.join(d, "page.js"), "w").write(script)
+            r = subprocess.run([node, "--check", os.path.join(d, "page.js")], capture_output=True, text=True)
+            assert r.returncode == 0, r.stderr
+
+
+def test_ui_word_diff_marks_only_the_changed_words(tmp_path):
+    got = _node_ui(tmp_path, r"""
+const seg=w=>w&&[w.l.map(p=>(p.x?'[':'')+p.t+(p.x?']':'')).join(''),w.r.map(p=>(p.x?'[':'')+p.t+(p.x?']':'')).join('')];
+class El{constructor(t){this.tag=t;this.children=[];this.className='';this.style={};this._t='';this.colSpan=1}
+  set textContent(v){this._t=String(v);this.children=[]} get textContent(){return this._t+this.children.map(c=>c.textContent).join('')}
+  set innerHTML(v){throw new Error('innerHTML must never be used for compared text')}
+  appendChild(c){this.children.push(c);return c} removeChild(c){this.children=this.children.filter(x=>x!==c)} insertBefore(n,r){this.children.splice(this.children.indexOf(r),0,n);return n}}
+const doc={createElement:t=>new El(t)};
+const all=(e,f,acc=[])=>{if(f(e))acc.push(e);e.children.forEach(c=>all(c,f,acc));return acc};
+const box=new El('div');
+U.renderDiff(doc,box,U.lineDiff("SELECT <b>a</b>, ISNULL(x, 1) FROM t\nkeep","SELECT <b>a</b>, COALESCE(x, 1) FROM t\nkeep"),{});
+const marked=all(box,e=>e.className==='dx').map(e=>e.textContent);
+const tds=all(box,e=>e.tag==='td'&&/\btx\b/.test(e.className)&&e.children.length>0);
+const long='word '.repeat(3000);
+const t0=Date.now();const big=U.wordDiff(long+'one',long+'two');const ms=Date.now()-t0;
+out({same:seg(U.wordDiff("a b c","a b c")),
+     swap:seg(U.wordDiff("SELECT ISNULL(city, 'n/a') AS city","SELECT COALESCE(city, 'n/a') AS city")),
+     dropped:seg(U.wordDiff("FROM dbo.customers","FROM customers")),
+     unrelated:U.wordDiff("abcdef ghijkl","123 456 789"),
+     spaces:seg(U.wordDiff("a  b","a b")),
+     marked:marked,cellText:tds.map(t=>t.textContent),big:big&&[big.l.length,big.r.length],ms:ms,
+     empty:seg(U.wordDiff("","x y"))});""")
+    assert got["same"] == ["a b c", "a b c"]
+    assert got["swap"] == ["SELECT [ISNULL](city, 'n/a') AS city", "SELECT [COALESCE](city, 'n/a') AS city"]
+    assert got["dropped"] == ["FROM [dbo.]customers", "FROM customers"]
+    assert got["unrelated"] is None and got["spaces"] == ["a[  ]b", "a[ ]b"]
+    assert got["marked"] == ["ISNULL", "COALESCE"]                                     # only the words that differ are marked
+    assert got["cellText"] == ["SELECT <b>a</b>, ISNULL(x, 1) FROM t", "SELECT <b>a</b>, COALESCE(x, 1) FROM t"]    # HTML-looking text stays text
+    assert got["ms"] < 3000 and got["empty"] is None
+
+
+def test_docs_and_manifests_mention_roles_diff_and_history():
+    root = os.path.join(HERE, "..")
+    dep = open(os.path.join(root, "deploy", "k8s", "deployment.yaml")).read()
+    assert "SPARQIFY_ADMINS" in dep and "SPARQIFY_VIEWERS" in dep and "SPARQIFY_DEFAULT_ROLE" in dep
+    assert not re.search(r"(?m)^\s+- \{name: SPARQIFY_(ADMINS|VIEWERS|DEFAULT_ROLE)", dep)            # all commented out: off by default
+    readme = open(os.path.join(root, "README.md")).read()
+    assert "Side-by-side diff" in readme and "Keep a history in this browser" in readme and "has no authentication" not in readme
+    assert "--role viewer" in open(os.path.join(root, "deploy", "README.md")).read()
+    sec = open(os.path.join(root, "SECURITY.md")).read()
+    assert "localStorage" in sec and "Roles (" in sec
+    assert "viewer" in open(os.path.join(root, "CHANGELOG.md")).read()

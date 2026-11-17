@@ -3,7 +3,7 @@
 All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow [Semantic Versioning](https://semver.org/).
 sparqify is a **migration aid, not a guarantee**: read [docs/limits.md](docs/limits.md) before relying on a conversion.
 
-## [0.1.0] - 2026-11-15 (first beta)
+## [0.1.0] - 2026-11-16 (first beta)
 
 ### Converters
 - Python/pandas, Polars, Dask, R (dplyr/tidyr), SAS (including macros), Jupyter notebooks, dbt models, Excel formulas, Scala, Java streams and plain Python to PySpark.
@@ -22,6 +22,8 @@ sparqify is a **migration aid, not a guarantee**: read [docs/limits.md](docs/lim
 - `sparqify project` converts a whole folder with a report, `sparqify ci-comment` / the GitHub Action comment on pull requests, `sparqify agent` for supervised project conversion, `sparqify gluten-conf` for Gluten/Velox settings.
 - Web UI (`sparqify serve`): convert, project and orchestrate tabs, safe by default (loopback, Host and Origin checks, CSP, size and time limits, each request in an isolated process).
 - Web UI access: one shared token, per-user tokens (`sparqify users add`), or single sign-on through an OIDC proxy; per-user rate limits and a daily AI cap; access log with the signed-in user; token-protected `/metrics`.
+- Web UI roles: `admin`, `user` and read-only `viewer` (no AI features, no `/metrics`), set per user or, with single sign-on, from `SPARQIFY_ADMINS` / `SPARQIFY_VIEWERS`.
+- Web UI side-by-side diff (output against the input, the previous conversion or a history entry, with the changed words marked) and an opt-in conversion history that stays in the browser.
 
 ### Deployment
 - A small image with no third-party packages, scanned for HIGH and CRITICAL vulnerabilities on every build and published signed, as `v<version>` and `<version>`.

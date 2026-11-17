@@ -313,6 +313,11 @@ against a real Teradata system, so test the generated code on your data and read
   Databricks target, pandas API mode, optimize, Delta + catalog/schema, broadcast hints, Excel column names, dbt model name, and a
   *strict* banner (UI only: warns that CI would fail). Options are remembered in the browser (never your code or API key);
   **Copy link** encodes options + input in the URL hash for sharing.
+- **Side-by-side diff** – *Show side-by-side diff* compares the output with the input (for SQL to Spark SQL this shows exactly which lines the
+  converter rewrote), with the previous conversion, or with an entry from your history. Changed lines are paired, the words that differ are
+  marked inside each line, long unchanged stretches are folded (click to open), and *Ignore whitespace* is a checkbox.
+- **History** – opt-in (*Keep a history in this browser*, off by default). The last 30 conversions are kept in this browser only: never sent to
+  the server, never your API key. Restore one, delete one, or clear all; switching it off deletes what was kept. Very large conversions are not kept.
 - **AI suggestions** – opt-in. Pick a provider and enter your API key (kept in memory only, never stored), optionally insert suggestions as live
   code, cap the number of blocks, or use *Dry run* to see exactly which prompts would be sent without sending anything.
 - **Project tab** – upload several files, a folder or a `.zip` (or drop them). You get a status table (OK / CHECK / NEEDS REVIEW /
@@ -321,9 +326,9 @@ against a real Teradata system, so test the generated code on your data and read
 - **Orchestrate tab** – Airflow DAGs, crontabs, PowerCenter workflows and SSIS packages → Databricks job JSON / Airflow DAG, with
   **Download all (.zip)**.
 
-JSON API: `POST /api/convert`, `/api/project`, `/api/orchestrate`; `GET /api/examples`, `/api/example`. `/?example=sales.py` deep-links
-an example. The server only parses text and never runs it; it binds to localhost and has no authentication, so do not expose it to a
-network as is.
+JSON API: `POST /api/convert`, `/api/project`, `/api/orchestrate`, `/api/agent`; `GET /api/examples`, `/api/example`, `/api/whoami`. `/?example=sales.py` deep-links
+an example. The server only parses text and never runs it. It binds to localhost; to share it, use a token, per-user tokens with roles
+(admin, user, read-only viewer) or single sign-on, behind TLS: see [deploy/README.md](deploy/README.md) and [SECURITY.md](SECURITY.md).
 
 ## GitHub Action
 
