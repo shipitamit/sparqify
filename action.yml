@@ -1,6 +1,6 @@
-name: "Sparqix: convert code to Apache Spark"
+name: "Sparqify: convert code to Apache Spark"
 description: "Convert pandas, SQL, SAS, R, Informatica, stored procedures, streaming code and more to Apache Spark, report TODOs on the pull request."
-author: "sparqix"
+author: "sparqify"
 branding:
   icon: zap
   color: orange
@@ -11,7 +11,7 @@ inputs:
     default: "."
   output:
     description: "Folder for the converted files and the report."
-    default: "sparqix-out"
+    default: "sparqify-out"
   changed-only:
     description: "On pull requests, convert only the files changed in the PR."
     default: "true"
@@ -70,7 +70,7 @@ inputs:
     description: "Fail the job when: none | todo (any TODO remains) | failed (a file crashed the converter)."
     default: "none"
   python-version:
-    description: "Python version used to run sparqix."
+    description: "Python version used to run sparqify."
     default: "3.12"
   github-token:
     description: "Token used to post the comment (needs pull-requests: write)."
@@ -103,7 +103,7 @@ runs:
       with:
         python-version: ${{ inputs.python-version }}
 
-    - name: Install sparqix
+    - name: Install sparqify
       shell: bash
       run: python -m pip install --quiet "$GITHUB_ACTION_PATH"
 
@@ -118,9 +118,9 @@ runs:
       run: |
         set -euo pipefail
         git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA" || true
-        git -c core.quotePath=false diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/sparqix-changed.txt"
-        n=$(python -m sparqix ci-changed --path "$INPUT_PATH" --list "$RUNNER_TEMP/sparqix-changed.txt" --out "$RUNNER_TEMP/sparqix-only.txt")
-        echo "only=$RUNNER_TEMP/sparqix-only.txt" >> "$GITHUB_OUTPUT"
+        git -c core.quotePath=false diff --name-only --diff-filter=ACMR "$BASE_SHA" "$HEAD_SHA" > "$RUNNER_TEMP/sparqify-changed.txt"
+        n=$(python -m sparqify ci-changed --path "$INPUT_PATH" --list "$RUNNER_TEMP/sparqify-changed.txt" --out "$RUNNER_TEMP/sparqify-only.txt")
+        echo "only=$RUNNER_TEMP/sparqify-only.txt" >> "$GITHUB_OUTPUT"
         echo "count=$n" >> "$GITHUB_OUTPUT"
         echo "$n changed file(s) under $INPUT_PATH"
 
@@ -141,11 +141,11 @@ runs:
         INPUT_BROADCAST: ${{ inputs.broadcast }}
         ONLY_FILE: ${{ steps.changed.outputs.only }}
         INPUT_AI: ${{ inputs.ai }}
-        SPARQIX_AI_API_KEY: ${{ inputs.ai-api-key }}
+        SPARQIFY_AI_API_KEY: ${{ inputs.ai-api-key }}
         ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
-        SPARQIX_AI_PROVIDER: ${{ inputs.ai-provider }}
-        SPARQIX_AI_MODEL: ${{ inputs.ai-model }}
-        SPARQIX_AI_BASE_URL: ${{ inputs.ai-base-url }}
+        SPARQIFY_AI_PROVIDER: ${{ inputs.ai-provider }}
+        SPARQIFY_AI_MODEL: ${{ inputs.ai-model }}
+        SPARQIFY_AI_BASE_URL: ${{ inputs.ai-base-url }}
       run: |
         set -uo pipefail
         args=(project "$INPUT_PATH" -o "$INPUT_OUTPUT" --dialect "$INPUT_DIALECT" --sql-out "$INPUT_SQL_OUT" --target "$INPUT_TARGET" --mode "$INPUT_MODE")
@@ -155,20 +155,20 @@ runs:
         [ -n "$INPUT_BROADCAST" ] && args+=(--broadcast "$INPUT_BROADCAST")
         [ -n "${ONLY_FILE:-}" ] && args+=(--only "$ONLY_FILE")
         [ "$INPUT_AI" = "true" ] && args+=(--ai)
-        python -m sparqix "${args[@]}"
+        python -m sparqify "${args[@]}"
 
     - name: Summarise
       id: summary
       shell: bash
       env:
         INPUT_OUTPUT: ${{ inputs.output }}
-      run: python -m sparqix ci-comment "$INPUT_OUTPUT"
+      run: python -m sparqify ci-comment "$INPUT_OUTPUT"
 
     - name: Upload converted files
       if: ${{ inputs.upload-artifact == 'true' }}
       uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
       with:
-        name: sparqix-output
+        name: sparqify-output
         path: ${{ inputs.output }}
         if-no-files-found: ignore
 
@@ -182,7 +182,7 @@ runs:
         script: |
           const fs = require('fs');
           const body = fs.readFileSync(process.env.COMMENT_PATH, 'utf8');
-          const marker = '<!-- sparqix-report -->';
+          const marker = '<!-- sparqify-report -->';
           const {owner, repo} = context.repo;
           const issue_number = context.payload.pull_request.number;
           try {
@@ -194,7 +194,7 @@ runs:
               await github.rest.issues.createComment({owner, repo, issue_number, body});
             }
           } catch (e) {
-            core.warning('Could not post the sparqix comment (forked PR or missing pull-requests: write permission): ' + e.message);
+            core.warning('Could not post the sparqify comment (forked PR or missing pull-requests: write permission): ' + e.message);
           }
 
     - name: Apply fail-on policy
@@ -205,8 +205,8 @@ runs:
         FAILED: ${{ steps.summary.outputs.failed }}
       run: |
         case "$FAIL_ON" in
-          todo)   if [ "${TODOS:-0}" -gt 0 ] || [ "${FAILED:-0}" -gt 0 ]; then echo "::error::sparqix left ${TODOS} TODO(s) and ${FAILED} failed file(s)"; exit 1; fi ;;
-          failed) if [ "${FAILED:-0}" -gt 0 ]; then echo "::error::sparqix failed on ${FAILED} file(s)"; exit 1; fi ;;
+          todo)   if [ "${TODOS:-0}" -gt 0 ] || [ "${FAILED:-0}" -gt 0 ]; then echo "::error::sparqify left ${TODOS} TODO(s) and ${FAILED} failed file(s)"; exit 1; fi ;;
+          failed) if [ "${FAILED:-0}" -gt 0 ]; then echo "::error::sparqify failed on ${FAILED} file(s)"; exit 1; fi ;;
           none|"") ;;
           *) echo "::error::unknown fail-on value: $FAIL_ON"; exit 1 ;;
         esac

@@ -1,10 +1,10 @@
-# Example: single sign-on in front of sparqix, so people sign in with your identity provider instead of sharing a token.
+# Example: single sign-on in front of sparqify, so people sign in with your identity provider instead of sharing a token.
 # oauth2-proxy (or any OIDC auth proxy) does the sign-in; ingress-nginx asks it before every request and passes the verified e-mail on.
-# sparqix trusts that header only when the request also carries the proxy secret (a client that reaches the pod directly has no way to forge it).
+# sparqify trusts that header only when the request also carries the proxy secret (a client that reaches the pod directly has no way to forge it).
 #
-# Needs on the Deployment:   SPARQIX_TRUSTED_PROXIES=1
-#                            SPARQIX_AUTH_HEADER=X-Auth-Request-Email
-#                            SPARQIX_PROXY_SECRET   (from the Secret: kubectl -n sparqix patch secret sparqix ... or create it with --from-literal=proxy-secret=...)
+# Needs on the Deployment:   SPARQIFY_TRUSTED_PROXIES=1
+#                            SPARQIFY_AUTH_HEADER=X-Auth-Request-Email
+#                            SPARQIFY_PROXY_SECRET   (from the Secret: kubectl -n sparqify patch secret sparqify ... or create it with --from-literal=proxy-secret=...)
 # The shared token / per-user tokens keep working next to it (scripts, Prometheus), so keep them long and random or leave them out.
 #
 # The proxy secret is as secret as the objects that contain it: whoever can read this Ingress can read it. The NetworkPolicy (only the ingress
@@ -14,8 +14,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: sparqix
-  namespace: sparqix
+  name: sparqify
+  namespace: sparqify
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/proxy-body-size: "30m"
@@ -25,14 +25,14 @@ metadata:
     nginx.ingress.kubernetes.io/auth-signin: "https://oauth2.example.com/oauth2/start?rd=$scheme://$host$escaped_request_uri"
     nginx.ingress.kubernetes.io/auth-response-headers: "X-Auth-Request-Email"
     nginx.ingress.kubernetes.io/configuration-snippet: |
-      proxy_set_header X-Sparqix-Proxy-Secret "REPLACE-WITH-THE-PROXY-SECRET";
+      proxy_set_header X-Sparqify-Proxy-Secret "REPLACE-WITH-THE-PROXY-SECRET";
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [sparqix.example.com]
-      secretName: sparqix-tls
+    - hosts: [sparqify.example.com]
+      secretName: sparqify-tls
   rules:
-    - host: sparqix.example.com
+    - host: sparqify.example.com
       http:
         paths:
-          - {path: /, pathType: Prefix, backend: {service: {name: sparqix, port: {name: http}}}}
+          - {path: /, pathType: Prefix, backend: {service: {name: sparqify, port: {name: http}}}}

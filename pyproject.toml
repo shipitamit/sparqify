@@ -1,5 +1,5 @@
 [project]
-name = "pysparqix"
+name = "sparqify"
 version = "0.1.0"
 description = "Convert pandas, SQL dialects, SAS, R, ETL tools (Informatica, Talend, Teradata...) and more into Apache Spark (PySpark / Spark SQL)"
 readme = "README.md"
@@ -25,18 +25,18 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/shipitamit/sparqix"
-Source = "https://github.com/shipitamit/sparqix"
-Issues = "https://github.com/shipitamit/sparqix/issues"
-Documentation = "https://github.com/shipitamit/sparqix/blob/main/docs/limits.md"
-Changelog = "https://github.com/shipitamit/sparqix/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/shipitamit/sparqify"
+Source = "https://github.com/shipitamit/sparqify"
+Issues = "https://github.com/shipitamit/sparqify/issues"
+Documentation = "https://github.com/shipitamit/sparqify/blob/main/docs/limits.md"
+Changelog = "https://github.com/shipitamit/sparqify/blob/main/CHANGELOG.md"
 
 [project.scripts]
-sparqix = "sparqix.cli:main"
+sparqify = "sparqify.cli:main"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["sparqix"]
+packages = ["sparqify"]

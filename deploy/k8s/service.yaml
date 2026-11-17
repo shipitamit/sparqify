@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: sparqix
-  namespace: sparqix
-  labels: {app.kubernetes.io/name: sparqix}
+  name: sparqify
+  namespace: sparqify
+  labels: {app.kubernetes.io/name: sparqify}
 spec:
   type: ClusterIP
-  selector: {app.kubernetes.io/name: sparqix}
+  selector: {app.kubernetes.io/name: sparqify}
   ports:
     - {name: http, port: 80, targetPort: http}

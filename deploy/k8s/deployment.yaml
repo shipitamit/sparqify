@@ -1,23 +1,23 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: sparqix
-  namespace: sparqix
-  labels: {app.kubernetes.io/name: sparqix}
+  name: sparqify
+  namespace: sparqify
+  labels: {app.kubernetes.io/name: sparqify}
 spec:
   # no `replicas:` on purpose: the HorizontalPodAutoscaler (hpa.yaml, minReplicas 2) owns it, so re-applying this file never resets the count
   selector:
-    matchLabels: {app.kubernetes.io/name: sparqix}
+    matchLabels: {app.kubernetes.io/name: sparqify}
   strategy:
     rollingUpdate: {maxUnavailable: 0, maxSurge: 1}
   template:
     metadata:
-      labels: {app.kubernetes.io/name: sparqix}
+      labels: {app.kubernetes.io/name: sparqify}
     spec:
-      serviceAccountName: sparqix
+      serviceAccountName: sparqify
       automountServiceAccountToken: false
       # Stop sequence: preStop sleep (lets the ingress drop this pod), then SIGTERM (the app stops accepting and finishes running conversions for
-      # SPARQIX_DRAIN_SECONDS), then SIGKILL after this many seconds. Keep it above 5 + SPARQIX_DRAIN_SECONDS.
+      # SPARQIFY_DRAIN_SECONDS), then SIGKILL after this many seconds. Keep it above 5 + SPARQIFY_DRAIN_SECONDS.
       terminationGracePeriodSeconds: 170
       # A private ghcr.io package needs a pull secret (see deploy/README.md), then uncomment:
       # imagePullSecrets: [{name: ghcr-pull}]
@@ -28,40 +28,40 @@ spec:
         fsGroup: 10001
         seccompProfile: {type: RuntimeDefault}
       containers:
-        - name: sparqix
-          image: ghcr.io/shipitamit/sparqix:0.1.0     # build and push it first (see deploy/README.md); pin a digest in production
+        - name: sparqify
+          image: ghcr.io/shipitamit/sparqify:0.1.0     # build and push it first (see deploy/README.md); pin a digest in production
           imagePullPolicy: IfNotPresent
           args: ["serve", "--host", "0.0.0.0", "--port", "8765"]
           ports:
             - {name: http, containerPort: 8765}
           env:
-            - name: SPARQIX_TOKEN
-              valueFrom: {secretKeyRef: {name: sparqix, key: token}}
+            - name: SPARQIFY_TOKEN
+              valueFrom: {secretKeyRef: {name: sparqify, key: token}}
             # Host header values the app accepts (DNS-rebinding guard): the Service name and your ingress host name(s).
-            - name: SPARQIX_ALLOWED_HOSTS
-              value: "sparqix,sparqix.sparqix,sparqix.sparqix.svc,sparqix.sparqix.svc.cluster.local,sparqix.example.com"
-            # Optional AI features, any provider: SPARQIX_AI_PROVIDER (anthropic, openai, gemini, mistral, groq, together, openrouter, ollama, custom),
-            # SPARQIX_AI_MODEL, and for a self-hosted or gateway endpoint SPARQIX_AI_BASE_URL. The key lives in the Secret, never in the manifest.
-            # Worst-case memory = SPARQIX_MAX_CONCURRENT x SPARQIX_WORKER_MEMORY_MB + ~300 MB for the server; the container memory limit below
+            - name: SPARQIFY_ALLOWED_HOSTS
+              value: "sparqify,sparqify.sparqify,sparqify.sparqify.svc,sparqify.sparqify.svc.cluster.local,sparqify.example.com"
+            # Optional AI features, any provider: SPARQIFY_AI_PROVIDER (anthropic, openai, gemini, mistral, groq, together, openrouter, ollama, custom),
+            # SPARQIFY_AI_MODEL, and for a self-hosted or gateway endpoint SPARQIFY_AI_BASE_URL. The key lives in the Secret, never in the manifest.
+            # Worst-case memory = SPARQIFY_MAX_CONCURRENT x SPARQIFY_WORKER_MEMORY_MB + ~300 MB for the server; the container memory limit below
             # must stay above that, or a burst of heavy requests gets the whole pod OOM-killed (3 x 768 + 300 = about 2.6 GiB).
-            - {name: SPARQIX_MAX_CONCURRENT, value: "3"}
-            - {name: SPARQIX_WORKER_MEMORY_MB, value: "768"}
-            - {name: SPARQIX_DRAIN_SECONDS, value: "150"}
+            - {name: SPARQIFY_MAX_CONCURRENT, value: "3"}
+            - {name: SPARQIFY_WORKER_MEMORY_MB, value: "768"}
+            - {name: SPARQIFY_DRAIN_SECONDS, value: "150"}
             # One ingress in front: the client address (failed-token throttle, access log) comes from X-Forwarded-For, and HSTS is sent for https requests.
             # Only correct while the NetworkPolicy lets nothing but the ingress controller reach the pod. Set 0 if you connect without a proxy.
-            - {name: SPARQIX_TRUSTED_PROXIES, value: "1"}
-            - {name: SPARQIX_ACCESS_LOG, value: "1"}          # one JSON line per request on stderr (no query string, no token); names the signed-in user
+            - {name: SPARQIFY_TRUSTED_PROXIES, value: "1"}
+            - {name: SPARQIFY_ACCESS_LOG, value: "1"}          # one JSON line per request on stderr (no query string, no token); names the signed-in user
             # Per-user limits (counted per pod; with 2-6 replicas the effective limit is a little higher). 0 turns a limit off.
-            - {name: SPARQIX_USER_RPM, value: "60"}            # conversion requests per user per minute
-            - {name: SPARQIX_AI_DAILY_LIMIT, value: "100"}     # AI requests per user per day (the AI key is the one thing worth stealing)
-            # Per-user tokens instead of one shared token: create the Secret `sparqix-users` (see deploy/README.md), mount it (volume below), then uncomment:
-            # - {name: SPARQIX_USERS_FILE, value: /etc/sparqix/users/users}
-            # Single sign-on via an OIDC proxy (see ingress-oidc.example.yaml): uncomment both, and keep SPARQIX_TRUSTED_PROXIES above at 1 or more.
-            # - {name: SPARQIX_AUTH_HEADER, value: X-Auth-Request-Email}
-            # - name: SPARQIX_PROXY_SECRET
-            #   valueFrom: {secretKeyRef: {name: sparqix, key: proxy-secret}}
-            - name: SPARQIX_AI_API_KEY
-              valueFrom: {secretKeyRef: {name: sparqix, key: ai-api-key, optional: true}}
+            - {name: SPARQIFY_USER_RPM, value: "60"}            # conversion requests per user per minute
+            - {name: SPARQIFY_AI_DAILY_LIMIT, value: "100"}     # AI requests per user per day (the AI key is the one thing worth stealing)
+            # Per-user tokens instead of one shared token: create the Secret `sparqify-users` (see deploy/README.md), mount it (volume below), then uncomment:
+            # - {name: SPARQIFY_USERS_FILE, value: /etc/sparqify/users/users}
+            # Single sign-on via an OIDC proxy (see ingress-oidc.example.yaml): uncomment both, and keep SPARQIFY_TRUSTED_PROXIES above at 1 or more.
+            # - {name: SPARQIFY_AUTH_HEADER, value: X-Auth-Request-Email}
+            # - name: SPARQIFY_PROXY_SECRET
+            #   valueFrom: {secretKeyRef: {name: sparqify, key: proxy-secret}}
+            - name: SPARQIFY_AI_API_KEY
+              valueFrom: {secretKeyRef: {name: sparqify, key: ai-api-key, optional: true}}
           lifecycle:
             preStop:
               exec: {command: ["python", "-c", "import time; time.sleep(5)"]}
@@ -81,15 +81,15 @@ spec:
             capabilities: {drop: ["ALL"]}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
-            # - {name: users, mountPath: /etc/sparqix/users, readOnly: true}      # per-user tokens (see SPARQIX_USERS_FILE above)
+            # - {name: users, mountPath: /etc/sparqify/users, readOnly: true}      # per-user tokens (see SPARQIFY_USERS_FILE above)
       volumes:
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
         # - name: users
-        #   secret: {secretName: sparqix-users}
+        #   secret: {secretName: sparqify-users}
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
           whenUnsatisfiable: ScheduleAnyway
           labelSelector:
-            matchLabels: {app.kubernetes.io/name: sparqix}
+            matchLabels: {app.kubernetes.io/name: sparqify}

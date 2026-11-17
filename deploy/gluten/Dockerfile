@@ -11,7 +11,7 @@ ARG BASE_IMAGE
 FROM python:3.12-slim AS wheel
 WORKDIR /src
 COPY pyproject.toml README.md ./
-COPY sparqix ./sparqix
+COPY sparqify ./sparqify
 RUN pip wheel --no-cache-dir --no-deps -w /wheels .
 
 FROM ${BASE_IMAGE}
@@ -30,7 +30,7 @@ RUN set -eux; mkdir -p /opt/gluten; \
     chmod 0444 /opt/gluten/gluten.jar; \
     python3 -m pip install --no-cache-dir --no-deps /tmp/wheels/*.whl; \
     SPARK_CONF_DIR="${SPARK_CONF_DIR:-${SPARK_HOME:-/opt/spark}/conf}"; mkdir -p "$SPARK_CONF_DIR"; \
-    python3 -m sparqix gluten-conf --jar /opt/gluten/gluten.jar --offheap "$GLUTEN_OFFHEAP" >> "$SPARK_CONF_DIR/spark-defaults.conf"; \
+    python3 -m sparqify gluten-conf --jar /opt/gluten/gluten.jar --offheap "$GLUTEN_OFFHEAP" >> "$SPARK_CONF_DIR/spark-defaults.conf"; \
     rm -rf /tmp/wheels /tmp/jars
 # Back to the base image's own user and entrypoint: nothing else is changed.
 ARG RUN_AS_USER=185

@@ -4,11 +4,11 @@
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: sparqix-ai-egress
-  namespace: sparqix
+  name: sparqify-ai-egress
+  namespace: sparqify
 spec:
   podSelector:
-    matchLabels: {app.kubernetes.io/name: sparqix}
+    matchLabels: {app.kubernetes.io/name: sparqify}
   policyTypes: [Egress]
   egress:
     - to:

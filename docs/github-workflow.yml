@@ -1,6 +1,6 @@
-# Copy to .github/workflows/sparqix.yml in your repository.
+# Copy to .github/workflows/sparqify.yml in your repository.
 # Converts the files changed in each pull request and posts / updates one summary comment.
-name: sparqix
+name: sparqify
 on:
   pull_request:
     paths: ["**.py", "**.sql", "**.ipynb", "**.R", "**.sas", "**.scala", "**.java", "**.xml", "**.json", "**.dtsx"]
@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: YOUR-ORG/sparqix@v1          # this repository, tagged
+      - uses: YOUR-ORG/sparqify@v1          # this repository, tagged
         with:
           path: etl                          # folder to convert
           dialect: tsql                      # source SQL dialect

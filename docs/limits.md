@@ -1,11 +1,11 @@
-# What sparqix does not do (yet)
+# What sparqify does not do (yet)
 
-sparqix is a **migration aid, not a guarantee**. Review every converted file before it runs in production.
+sparqify is a **migration aid, not a guarantee**. Review every converted file before it runs in production.
 
 ## How to read the output
-- `# TODO(sparqix)` marks code it could not translate safely. The original code is kept next to it. Nothing is silently guessed.
+- `# TODO(sparqify)` marks code it could not translate safely. The original code is kept next to it. Nothing is silently guessed.
 - `WARNING` lines in the report mean the code converted but behaves differently in Spark (for example row order, `to_csv` writing a folder, or case-sensitive text matching).
-- The converted code always parses. That does not mean it gives the same results; use `sparqix verify` on sample data for that.
+- The converted code always parses. That does not mean it gives the same results; use `sparqify verify` on sample data for that.
 
 ## Testing status
 | Area | Status |
@@ -17,7 +17,7 @@ sparqix is a **migration aid, not a guarantee**. Review every converted file bef
 | SQL dialects | Checked on hand-written examples, not against real database engines |
 | Teradata, SAS, ETL tools | Best effort; the original tools were not available to compare against. The Pentaho, Pig, Informatica PowerCenter, SSIS, DataStage, Alteryx and Talend conversions run on real Spark against hand-computed results (`tests/test_e2e_etl.py`); the T-SQL, Oracle and Teradata stored-procedure examples run on real Spark for SELECT/INSERT, control flow and OUT values (UPDATE, DELETE and MERGE are syntax-checked by Spark's parser but not executed: they need Delta) |
 
-## Verify loop (`sparqix verify`)
+## Verify loop (`sparqify verify`)
 - Can run the original for pandas, Polars, Dask, notebooks, SQL (DuckDB or SQLite) and R.
 - **Cannot** run the original for SAS (proprietary, no free engine), Scala/Java, Excel, dbt, the ETL tools, or stored procedures. These are reviewed by reading, and the tool says so.
 - SQL verification only works for SQL that DuckDB or SQLite accepts.

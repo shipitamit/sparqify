@@ -2,8 +2,8 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: sparqix-convert
-  namespace: sparqix
+  name: sparqify-convert
+  namespace: sparqify
 spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 86400
@@ -13,8 +13,8 @@ spec:
       automountServiceAccountToken: false
       securityContext: {runAsNonRoot: true, runAsUser: 10001, runAsGroup: 10001, fsGroup: 10001, seccompProfile: {type: RuntimeDefault}}
       containers:
-        - name: sparqix
-          image: ghcr.io/shipitamit/sparqix:0.1.0
+        - name: sparqify
+          image: ghcr.io/shipitamit/sparqify:0.1.0
           args: ["project", "/in", "-o", "/out"]
           resources: {requests: {cpu: 100m, memory: 256Mi}, limits: {cpu: "2", memory: 2Gi}}
           securityContext: {allowPrivilegeEscalation: false, readOnlyRootFilesystem: true, capabilities: {drop: ["ALL"]}}

@@ -1,7 +1,7 @@
 name: image
 on:
   pull_request:          # plain pull_request only: fork code must not run with write tokens
-    paths: [Dockerfile, sparqix/**, deploy/**, pyproject.toml, .github/workflows/image.yml]
+    paths: [Dockerfile, sparqify/**, deploy/**, pyproject.toml, .github/workflows/image.yml]
   push:
     branches: [main]
     tags: ["v*"]
@@ -22,12 +22,12 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with: {persist-credentials: false}
       - name: Build image (not pushed)
-        run: docker build -t sparqix:ci .
+        run: docker build -t sparqify:ci .
       - name: Scan image (fails on HIGH/CRITICAL with a fix available)
         # the findings table is printed in THIS step's log, so a failure explains itself
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: sparqix:ci
+          image-ref: sparqify:ci
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           exit-code: "1"
@@ -37,7 +37,7 @@ jobs:
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: sparqix:ci
+          image-ref: sparqify:ci
           severity: HIGH,CRITICAL
           ignore-unfixed: true
           limit-severities-for-sarif: true
@@ -51,8 +51,8 @@ jobs:
         with: {name: trivy-sarif, path: trivy.sarif, if-no-files-found: ignore}
       - name: Image runs as non-root and serves probes
         run: |
-          test "$(docker run --rm --entrypoint id sparqix:ci -u)" = "10001"
-          docker run -d --name sparqix-ci -e SPARQIX_TOKEN=ci --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -p 8765:8765 sparqix:ci
+          test "$(docker run --rm --entrypoint id sparqify:ci -u)" = "10001"
+          docker run -d --name sparqify-ci -e SPARQIFY_TOKEN=ci --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges -p 8765:8765 sparqify:ci
           for i in $(seq 20); do curl -fs localhost:8765/healthz && break; sleep 1; done
           code=$(curl -s -o /dev/null -w '%{http_code}' localhost:8765/api/examples); test "$code" = 401
       - name: Validate Kubernetes manifests

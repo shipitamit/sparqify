@@ -1,9 +1,9 @@
 apiVersion: policy/v1
 kind: PodDisruptionBudget
 metadata:
-  name: sparqix
-  namespace: sparqix
+  name: sparqify
+  namespace: sparqify
 spec:
   minAvailable: 1
   selector:
-    matchLabels: {app.kubernetes.io/name: sparqix}
+    matchLabels: {app.kubernetes.io/name: sparqify}

@@ -7,7 +7,7 @@ import os
 import pytest
 
 pyspark = pytest.importorskip("pyspark")
-from sparqix import verify as V  # noqa: E402
+from sparqify import verify as V  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "e2e", "data")

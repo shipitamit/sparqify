@@ -2,8 +2,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: sparqix
-  namespace: sparqix
+  name: sparqify
+  namespace: sparqify
   annotations:
     nginx.ingress.kubernetes.io/ssl-redirect: "true"
     nginx.ingress.kubernetes.io/proxy-body-size: "30m"
@@ -16,10 +16,10 @@ metadata:
 spec:
   ingressClassName: nginx
   tls:
-    - hosts: [sparqix.example.com]
-      secretName: sparqix-tls
+    - hosts: [sparqify.example.com]
+      secretName: sparqify-tls
   rules:
-    - host: sparqix.example.com
+    - host: sparqify.example.com
       http:
         paths:
-          - {path: /, pathType: Prefix, backend: {service: {name: sparqix, port: {name: http}}}}
+          - {path: /, pathType: Prefix, backend: {service: {name: sparqify, port: {name: http}}}}

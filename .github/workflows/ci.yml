@@ -46,15 +46,15 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Run the action on the bundled examples
-        id: sparqix
+        id: sparqify
         uses: ./
         with:
           path: examples
-          output: sparqix-out
+          output: sparqify-out
           comment: "false"
           changed-only: "false"
           fail-on: failed
       - name: Check outputs
         run: |
-          test "${{ steps.sparqix.outputs.converted }}" -gt 10
-          test -f sparqix-out/SPARQIX_REPORT.md
+          test "${{ steps.sparqify.outputs.converted }}" -gt 10
+          test -f sparqify-out/SPARQIFY_REPORT.md

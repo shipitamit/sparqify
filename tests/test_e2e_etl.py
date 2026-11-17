@@ -8,8 +8,8 @@ import pytest
 
 pyspark = pytest.importorskip("pyspark")
 pd = pytest.importorskip("pandas")
-from sparqix import verify as V  # noqa: E402
-from sparqix.core import convert  # noqa: E402
+from sparqify import verify as V  # noqa: E402
+from sparqify.core import convert  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 EX = os.path.join(HERE, "..", "examples")
@@ -107,7 +107,7 @@ class _Catalog:
 
 def _spark():
     from pyspark.sql import SparkSession
-    return SparkSession.builder.master("local[1]").appName("sparqix-e2e-etl").config("spark.ui.enabled", "false").getOrCreate()
+    return SparkSession.builder.master("local[1]").appName("sparqify-e2e-etl").config("spark.ui.enabled", "false").getOrCreate()
 
 
 def test_informatica_mapping_matches_expected():
