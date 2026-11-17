@@ -1,7 +1,7 @@
 # sparqify
 
 Convert legacy data code into **Apache Spark**: **pandas, Polars, Dask, R/dplyr, SAS, Jupyter notebooks, dbt models, Excel formulas, Scala/Java collections,
-plain Python, 40 SQL dialects (including Teradata, DB2, Netezza, Vertica, ClickHouse, HANA), stored procedures (T-SQL, PL/SQL, Teradata SPL)** and **ETL tools (Informatica, Talend, Alteryx, Pentaho,
+plain Python, SQL in 40+ dialects including Oracle, T-SQL, Teradata, PostgreSQL, Snowflake, BigQuery and Databricks, stored procedures (T-SQL, PL/SQL, Teradata SPL)** and **ETL tools (Informatica, Talend, Alteryx, Pentaho,
 Pig, SSIS, DataStage, Hive, Teradata BTEQ/FastLoad/MultiLoad/TPT)**.
 Zero dependencies (stdlib only). Output always parses; anything it cannot translate safely is left as a
 `# TODO(sparqify)` comment with the original code, never silently converted wrongly.
